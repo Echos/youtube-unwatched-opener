@@ -1,0 +1,607 @@
+/* YouTube動画ハイライト機能 */
+
+/* 未視聴動画のハイライト */
+.youtube-unwatched-opener-unwatched {
+  position: relative !important;
+  border: 3px solid #4285f4 !important;
+  border-radius: 8px !important;
+  background: linear-gradient(135deg, rgba(66, 133, 244, 0.1), rgba(66, 133, 244, 0.05)) !important;
+  box-shadow: 0 2px 8px rgba(66, 133, 244, 0.3) !important;
+  box-sizing: border-box !important;
+  margin: -3px !important;
+}
+
+.youtube-unwatched-opener-unwatched::before {
+  content: "未視聴" !important;
+  position: absolute !important;
+  top: -12px !important;
+  left: 8px !important;
+  background: #4285f4 !important;
+  color: white !important;
+  padding: 2px 8px !important;
+  font-size: 12px !important;
+  font-weight: bold !important;
+  border-radius: 12px !important;
+  z-index: 1000 !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+}
+
+/* ライブ中動画のハイライト */
+.youtube-unwatched-opener-live {
+  position: relative !important;
+  border: 3px solid #ff0000 !important;
+  border-radius: 8px !important;
+  background: linear-gradient(135deg, rgba(255, 0, 0, 0.1), rgba(255, 0, 0, 0.05)) !important;
+  box-shadow: 0 2px 8px rgba(255, 0, 0, 0.3) !important;
+  animation: youtube-unwatched-opener-pulse 2s infinite !important;
+  box-sizing: border-box !important;
+  margin: -3px !important;
+}
+
+.youtube-unwatched-opener-live::before {
+  content: "🔴 LIVE" !important;
+  position: absolute !important;
+  top: -12px !important;
+  left: 8px !important;
+  background: #ff0000 !important;
+  color: white !important;
+  padding: 2px 8px !important;
+  font-size: 12px !important;
+  font-weight: bold !important;
+  border-radius: 12px !important;
+  z-index: 1000 !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+}
+
+/* 視聴済み動画のハイライト（グレー枠線） */
+.youtube-unwatched-opener-watched {
+  filter: grayscale(80%) !important;
+  position: relative !important;
+  border: 2px solid #9aa0a6 !important;
+  border-radius: 8px !important;
+  background: linear-gradient(135deg, rgba(154, 160, 166, 0.05), rgba(154, 160, 166, 0.02)) !important;
+  box-shadow: 0 2px 8px rgba(154, 160, 166, 0.15) !important;
+  box-sizing: border-box !important;
+  margin: -2px !important;
+}
+
+/* 視聴済み動画にマウスホバー時の表示改善 */
+.youtube-unwatched-opener-watched:hover {
+  filter: grayscale(40%) !important;
+}
+
+.youtube-unwatched-opener-watched::before {
+  content: "視聴済み" !important;
+  position: absolute !important;
+  top: -12px !important;
+  left: 8px !important;
+  background: rgba(154, 160, 166, 0.8) !important;
+  color: white !important;
+  padding: 2px 8px !important;
+  font-size: 12px !important;
+  font-weight: bold !important;
+  border-radius: 12px !important;
+  z-index: 1000 !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+}
+
+/* プレミア公開予定動画のハイライト */
+.youtube-unwatched-opener-premiere {
+  position: relative !important;
+  border: 3px solid #ff6d00 !important;
+  border-radius: 8px !important;
+  background: linear-gradient(135deg, rgba(255, 109, 0, 0.1), rgba(255, 109, 0, 0.05)) !important;
+  box-shadow: 0 2px 8px rgba(255, 109, 0, 0.3) !important;
+  box-sizing: border-box !important;
+  margin: -3px !important;
+}
+
+.youtube-unwatched-opener-premiere::before {
+  content: "プレミア公開" !important;
+  position: absolute !important;
+  top: -12px !important;
+  left: 8px !important;
+  background: #ff6d00 !important;
+  color: white !important;
+  padding: 2px 8px !important;
+  font-size: 12px !important;
+  font-weight: bold !important;
+  border-radius: 12px !important;
+  z-index: 1000 !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+}
+
+/* プレミア公開かつ視聴済み動画のハイライト */
+.youtube-unwatched-opener-premiere-watched {
+  filter: grayscale(70%) !important;
+  position: relative !important;
+  border: 2px solid #e65100 !important;
+  border-radius: 8px !important;
+  background: linear-gradient(135deg, rgba(230, 81, 0, 0.08), rgba(230, 81, 0, 0.03)) !important;
+  box-shadow: 0 2px 8px rgba(230, 81, 0, 0.2) !important;
+  box-sizing: border-box !important;
+  margin: -2px !important;
+}
+
+/* プレミア視聴済み動画にマウスホバー時の表示改善 */
+.youtube-unwatched-opener-premiere-watched:hover {
+  filter: grayscale(30%) !important;
+}
+
+.youtube-unwatched-opener-premiere-watched::before {
+  content: "プレミア (視聴済み)" !important;
+  position: absolute !important;
+  top: -12px !important;
+  left: 8px !important;
+  background: rgba(230, 81, 0, 0.8) !important;
+  color: white !important;
+  padding: 2px 8px !important;
+  font-size: 12px !important;
+  font-weight: bold !important;
+  border-radius: 12px !important;
+  z-index: 1000 !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+}
+
+/* アニメーション */
+@keyframes youtube-unwatched-opener-pulse {
+  0% {
+    box-shadow: 0 2px 8px rgba(255, 0, 0, 0.3);
+  }
+  50% {
+    box-shadow: 0 2px 16px rgba(255, 0, 0, 0.6);
+  }
+  100% {
+    box-shadow: 0 2px 8px rgba(255, 0, 0, 0.3);
+  }
+}
+
+/* LIVEかつ視聴済み動画のハイライト */
+.youtube-unwatched-opener-live-watched {
+  position: relative !important;
+  border: 3px solid #ff6600 !important;
+  border-radius: 8px !important;
+  background: linear-gradient(135deg, rgba(255, 102, 0, 0.15), rgba(255, 102, 0, 0.05)) !important;
+  box-shadow: 0 2px 8px rgba(255, 102, 0, 0.4) !important;
+  animation: youtube-unwatched-opener-pulse-orange 2s infinite !important;
+  box-sizing: border-box !important;
+  margin: -3px !important;
+}
+
+.youtube-unwatched-opener-live-watched::before {
+  content: "🔴 LIVE (視聴済み)" !important;
+  position: absolute !important;
+  top: -12px !important;
+  left: 8px !important;
+  background: #ff6600 !important;
+  color: white !important;
+  padding: 2px 8px !important;
+  font-size: 12px !important;
+  font-weight: bold !important;
+  border-radius: 12px !important;
+  z-index: 1000 !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+}
+
+/* オレンジ色のパルスアニメーション */
+@keyframes youtube-unwatched-opener-pulse-orange {
+  0% {
+    box-shadow: 0 2px 8px rgba(255, 102, 0, 0.4);
+  }
+  50% {
+    box-shadow: 0 2px 16px rgba(255, 102, 0, 0.7);
+  }
+  100% {
+    box-shadow: 0 2px 8px rgba(255, 102, 0, 0.4);
+  }
+}
+
+/* 公開予定動画のハイライト（紫色枠線） */
+.youtube-unwatched-opener-scheduled {
+  filter: grayscale(70%) !important;
+  position: relative !important;
+  border: 2px solid #9c27b0 !important;
+  border-radius: 8px !important;
+  background: linear-gradient(135deg, rgba(156, 39, 176, 0.08), rgba(156, 39, 176, 0.03)) !important;
+  box-shadow: 0 2px 8px rgba(156, 39, 176, 0.2) !important;
+  box-sizing: border-box !important;
+  margin: -2px !important;
+}
+
+/* 公開予定動画にマウスホバー時の表示改善 */
+.youtube-unwatched-opener-scheduled:hover {
+  filter: grayscale(30%) !important;
+}
+
+.youtube-unwatched-opener-scheduled::before {
+  content: "📅 公開予定" !important;
+  position: absolute !important;
+  top: -12px !important;
+  left: 8px !important;
+  background: #9c27b0 !important;
+  color: white !important;
+  padding: 2px 8px !important;
+  font-size: 12px !important;
+  font-weight: bold !important;
+  border-radius: 12px !important;
+  z-index: 1000 !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+}
+
+/* ハイライト無効時のクラス */
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-unwatched,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-live,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-watched,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-premiere,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-premiere-watched,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-live-watched,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-scheduled,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-shorts-unwatched,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-shorts-watched {
+  border: none !important;
+  background: none !important;
+  box-shadow: none !important;
+  filter: none !important;
+  animation: none !important;
+  margin: 0 !important;
+}
+
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-unwatched::before,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-live::before,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-watched::before,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-premiere::before,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-premiere-watched::before,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-live-watched::before,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-scheduled::before,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-shorts-unwatched::before,
+.youtube-unwatched-opener-highlight-disabled .youtube-unwatched-opener-shorts-watched::before {
+  display: none !important;
+}
+
+/* ショート動画のハイライト */
+.youtube-unwatched-opener-shorts-unwatched {
+  position: relative !important;
+  border: 3px solid #ff9800 !important;
+  border-radius: 8px !important;
+  background: linear-gradient(135deg, rgba(255, 152, 0, 0.1), rgba(255, 152, 0, 0.05)) !important;
+  box-shadow: 0 2px 8px rgba(255, 152, 0, 0.3) !important;
+  box-sizing: border-box !important;
+  margin: -3px !important;
+}
+
+.youtube-unwatched-opener-shorts-unwatched::before {
+  content: "📱 未視聴ショート" !important;
+  position: absolute !important;
+  top: -12px !important;
+  left: 8px !important;
+  background: #ff9800 !important;
+  color: white !important;
+  padding: 2px 8px !important;
+  font-size: 12px !important;
+  font-weight: bold !important;
+  border-radius: 12px !important;
+  z-index: 1000 !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+}
+
+.youtube-unwatched-opener-shorts-watched {
+  position: relative !important;
+  border: 3px solid #795548 !important;
+  border-radius: 8px !important;
+  background: linear-gradient(135deg, rgba(121, 85, 72, 0.1), rgba(121, 85, 72, 0.05)) !important;
+  box-shadow: 0 2px 8px rgba(121, 85, 72, 0.3) !important;
+  box-sizing: border-box !important;
+  margin: -3px !important;
+}
+
+.youtube-unwatched-opener-shorts-watched::before {
+  content: "📱 視聴済みショート" !important;
+  position: absolute !important;
+  top: -12px !important;
+  left: 8px !important;
+  background: #795548 !important;
+  color: white !important;
+  padding: 2px 8px !important;
+  font-size: 12px !important;
+  font-weight: bold !important;
+  border-radius: 12px !important;
+  z-index: 1000 !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+}
+
+/* プレイリストパネルのスタイル */
+#youtube-unwatched-opener-playlist-panel {
+  background: #f9f9f9 !important;
+  border: 1px solid #e0e0e0 !important;
+  border-radius: 8px !important;
+  margin-bottom: 16px !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+  position: relative !important;
+  z-index: 100 !important;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .panel-header {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  padding: 12px 16px !important;
+  border-bottom: 1px solid #e0e0e0 !important;
+  background: #fff !important;
+  border-radius: 8px 8px 0 0 !important;
+}
+
+/* ダークモード対応 */
+html[dark] #youtube-unwatched-opener-playlist-panel,
+html[data-theme="dark"] #youtube-unwatched-opener-playlist-panel,
+[dark] #youtube-unwatched-opener-playlist-panel {
+  background: #0f0f0f !important;
+  border-color: #303030 !important;
+}
+
+html[dark] #youtube-unwatched-opener-playlist-panel .panel-header,
+html[data-theme="dark"] #youtube-unwatched-opener-playlist-panel .panel-header,
+[dark] #youtube-unwatched-opener-playlist-panel .panel-header {
+  background: #212121 !important;
+  border-bottom-color: #303030 !important;
+}
+
+html[dark] #youtube-unwatched-opener-playlist-panel .panel-header h3,
+html[data-theme="dark"] #youtube-unwatched-opener-playlist-panel .panel-header h3,
+[dark] #youtube-unwatched-opener-playlist-panel .panel-header h3 {
+  color: #fff !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .panel-header h3 {
+  margin: 0 !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: #333 !important;
+}
+
+#youtube-unwatched-opener-playlist-panel #toggle-playlist-panel {
+  background: none !important;
+  border: none !important;
+  font-size: 18px !important;
+  cursor: pointer !important;
+  color: #666 !important;
+  padding: 4px !important;
+  border-radius: 4px !important;
+}
+
+#youtube-unwatched-opener-playlist-panel #toggle-playlist-panel:hover {
+  background: #f0f0f0 !important;
+  color: #333 !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .panel-content {
+  padding: 0 !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .playlist-dialog-container {
+  max-height: 660px !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .playlist-panel-content {
+  padding: 12px !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .playlist-item-row {
+  margin-bottom: 8px !important;
+  padding: 4px !important;
+  border-radius: 4px !important;
+  transition: background 0.2s !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .playlist-item-row:hover {
+  background: #f0f0f0 !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .playlist-checkbox-container {
+  display: flex !important;
+  align-items: center !important;
+  cursor: pointer !important;
+  width: 100% !important;
+  font-size: 14px !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .playlist-checkbox-container input[type="checkbox"] {
+  margin: 0 !important;
+  margin-right: 8px !important;
+  width: 16px !important;
+  height: 16px !important;
+  cursor: pointer !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .custom-checkbox {
+  display: none !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .playlist-title {
+  color: #333 !important;
+  flex: 1 !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .loading {
+  text-align: center !important;
+  color: #666 !important;
+  font-size: 12px !important;
+  padding: 12px !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .playlist-separator {
+  text-align: center !important;
+  color: #999 !important;
+  font-size: 11px !important;
+  padding: 8px 0 !important;
+  margin: 8px 0 !important;
+  border-top: 1px solid #e0e0e0 !important;
+  font-weight: 500 !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .error-message {
+  text-align: center !important;
+  color: #d93025 !important;
+  font-size: 11px !important;
+  padding: 8px !important;
+  background: #ffeaea !important;
+  border-radius: 4px !important;
+  margin-top: 8px !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .retry-button {
+  display: block !important;
+  margin: 8px auto 0 !important;
+  padding: 4px 12px !important;
+  background: #065fd4 !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 4px !important;
+  font-size: 11px !important;
+  cursor: pointer !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .retry-button:hover {
+  background: #0b5bc4 !important;
+}
+
+/* オーバーレイ背景を透明にする */
+tp-yt-iron-overlay-backdrop.opened {
+  opacity: 0.0 !important;
+}
+
+/* 古いショート動画スタイルは削除済み - 新しい設計では content.js 内の CSS で制御 */
+
+/* Toast通知のスタイル */
+#youtube-unwatched-opener-toast {
+  position: fixed !important;
+  top: 20px !important;
+  right: 20px !important;
+  background: #323232 !important;
+  color: white !important;
+  padding: 12px 24px !important;
+  border-radius: 8px !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+  z-index: 10000 !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  opacity: 0 !important;
+  transform: translateX(100%) !important;
+  transition: all 0.3s ease-out !important;
+  max-width: 400px !important;
+  pointer-events: none !important;
+}
+
+#youtube-unwatched-opener-toast.show {
+  opacity: 1 !important;
+  transform: translateX(0) !important;
+  pointer-events: auto !important;
+}
+
+#youtube-unwatched-opener-toast.success {
+  background: #4caf50 !important;
+}
+
+#youtube-unwatched-opener-toast.info {
+  background: #2196f3 !important;
+}
+
+#youtube-unwatched-opener-toast.warning {
+  background: #ff9800 !important;
+}
+
+#youtube-unwatched-opener-toast.error {
+  background: #f44336 !important;
+}
+
+#youtube-unwatched-opener-toast .toast-icon {
+  font-size: 16px !important;
+  flex-shrink: 0 !important;
+}
+
+#youtube-unwatched-opener-toast .toast-message {
+  flex: 1 !important;
+  line-height: 1.4 !important;
+}
+/* 動画カウントオーバーレイ */
+#youtube-unwatched-opener-count-overlay {
+  position: fixed !important;
+  top: 60px;
+  left: 10px;
+  background: rgba(15, 15, 15, 0.82) !important;
+  color: #e8eaed !important;
+  padding: 10px 14px !important;
+  border-radius: 10px !important;
+  font-size: 12px !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  z-index: 9998 !important;
+  min-width: 130px !important;
+  backdrop-filter: blur(6px) !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4) !important;
+  line-height: 1.5 !important;
+  cursor: grab !important;
+  user-select: none !important;
+}
+
+#youtube-unwatched-opener-count-overlay .yuo-count-title {
+  font-weight: bold !important;
+  font-size: 10px !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.8px !important;
+  opacity: 0.55 !important;
+  margin-bottom: 6px !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15) !important;
+  padding-bottom: 4px !important;
+}
+
+#youtube-unwatched-opener-count-overlay .yuo-count-row {
+  display: flex !important;
+  justify-content: space-between !important;
+  gap: 16px !important;
+  padding: 1px 0 !important;
+}
+
+#youtube-unwatched-opener-count-overlay .yuo-count-row span:last-child {
+  font-weight: bold !important;
+  min-width: 18px !important;
+  text-align: right !important;
+}
+
+#youtube-unwatched-opener-count-overlay .yuo-total {
+  border-top: 1px solid rgba(255, 255, 255, 0.12) !important;
+  margin-top: 4px !important;
+  padding-top: 4px !important;
+  opacity: 0.7 !important;
+}
+
+#youtube-unwatched-opener-count-overlay .yuo-unwatched span:last-child {
+  color: #65b8ff !important;
+}
+
+#youtube-unwatched-opener-count-overlay .yuo-shorts span:last-child {
+  color: #ffb74d !important;
+}
+
+#youtube-unwatched-opener-count-overlay .yuo-live span:last-child {
+  color: #ff5252 !important;
+}
+
+#youtube-unwatched-opener-count-overlay .yuo-premiere span:last-child {
+  color: #ffb74d !important;
+}
+
+#youtube-unwatched-opener-count-overlay .yuo-scheduled span:last-child {
+  color: #9aa0a6 !important;
+}
+
+#youtube-unwatched-opener-count-overlay .yuo-watched span:last-child {
+  color: #9aa0a6 !important;
+}

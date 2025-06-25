@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>YouTube未視聴動画オープナー</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="logo">
+      <div class="logo-icon">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M5 3L13 8L5 13Z" fill="#0d0d0f"/>
+        </svg>
+      </div>
+      <div>
+        <div class="logo-text">未視聴オープナー</div>
+        <div class="logo-sub">YouTube</div>
+      </div>
+    </div>
+    <div class="toggle-wrap">
+      <span class="toggle-label" id="toggle-label">ON</span>
+      <label class="toggle">
+        <input type="checkbox" id="enabled" checked>
+        <div class="toggle-track"></div>
+        <div class="toggle-thumb"></div>
+      </label>
+    </div>
+  </div>
+
+  <!-- STATUS INDICATOR -->
+  <div class="status-bar">
+    <div class="dot" id="status-dot"></div>
+    <span id="status">設定を読み込み中...</span>
+  </div>
+
+  <!-- SECTION: 基本設定 -->
+  <div class="section">
+    <div class="section-title">基本設定</div>
+
+    <div class="row">
+      <div class="row-label">
+        ショートカット
+        <small>チャンネルページで動画を開く</small>
+      </div>
+      <div class="row-ctrl">
+        <select id="shortcutKey">
+          <option value="ctrl+enter">Ctrl + Enter</option>
+          <option value="ctrl+shift+u">Ctrl + Shift + U</option>
+          <option value="alt+u">Alt + U</option>
+          <option value="ctrl+u">Ctrl + U</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row-label">
+        動画数
+        <small>一度に開く最大数 (1–50)</small>
+      </div>
+      <div class="row-ctrl">
+        <input type="number" id="videoCount" min="1" max="50" value="5">
+        <span class="field-error" id="videoCountError"></span>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row-label">
+        ショート動画
+        <small>開く対象に含める</small>
+      </div>
+      <label class="toggle" style="margin-left:auto">
+        <input type="checkbox" id="includeShorts">
+        <div class="toggle-track"></div>
+        <div class="toggle-thumb"></div>
+      </label>
+    </div>
+  </div>
+
+  <!-- SECTION: ハイライト表示 -->
+  <div class="section">
+    <div class="section-title">ハイライト表示</div>
+
+    <div class="row">
+      <div class="row-label">
+        色分け表示
+        <small>Ctrl+Shift+H で切替</small>
+      </div>
+      <label class="toggle" style="margin-left:auto">
+        <input type="checkbox" id="highlightEnabled">
+        <div class="toggle-track"></div>
+        <div class="toggle-thumb"></div>
+      </label>
+    </div>
+  </div>
+
+  <!-- SECTION: 後で見る -->
+  <div class="section">
+    <div class="section-title">後で見る</div>
+
+    <div class="row">
+      <div class="row-label">
+        キー
+        <small>登録・解除ショートカット</small>
+      </div>
+      <div class="row-ctrl">
+        <input type="text" id="watchLaterKey" maxlength="1" placeholder="r">
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row-label">
+        パネル表示
+        <small>右サイドに表示</small>
+      </div>
+      <label class="toggle" style="margin-left:auto">
+        <input type="checkbox" id="showPlaylistPanel">
+        <div class="toggle-track"></div>
+        <div class="toggle-thumb"></div>
+      </label>
+    </div>
+
+  </div>
+
+  <!-- SECTION: 詳細設定 -->
+  <div class="section">
+    <div class="section-title">詳細設定</div>
+
+    <div class="row">
+      <div class="row-label">
+        履歴保持数
+        <small>視聴済み判定件数 (50–10000)</small>
+      </div>
+      <div class="row-ctrl">
+        <input type="number" id="historyMaxCount" min="50" max="10000" value="10000">
+        <span class="field-error" id="historyMaxCountError"></span>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row-label">
+        デバッグ
+        <small>詳細ログを出力</small>
+      </div>
+      <label class="toggle" style="margin-left:auto">
+        <input type="checkbox" id="debugMode">
+        <div class="toggle-track"></div>
+        <div class="toggle-thumb"></div>
+      </label>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <span class="footer-text">v1.0.0</span>
+  </div>
+
+  <script src="browser-polyfill.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

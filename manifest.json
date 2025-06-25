@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube未視聴動画オープナー",
+  "version": "1.0.0",
+  "description": "YouTube登録チャンネルページで未視聴動画を効率的に別タブで開きます",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "youtube-unwatched-opener@example.com",
+      "strict_min_version": "109.0"
+    }
+  },
+  "permissions": [
+    "activeTab",
+    "storage",
+    "tabs"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["browser-polyfill.js", "content.js"],
+      "css": ["highlight.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "YouTube未視聴動画オープナー設定"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["highlight.css"],
+      "matches": ["https://www.youtube.com/*"]
+    }
+  ]
+}
