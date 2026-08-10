@@ -59,7 +59,8 @@ const DEFAULT_SETTINGS = {
   showPlaylistPanel: true,
   debugMode: false,
   historyMaxCount: 10000,
-  includeShorts: true
+  includeShorts: true,
+  hideRelatedVideos: true
 };
 ```
 
@@ -139,6 +140,29 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
 - 最小権限の原則（activeTab・storage・tabs のみ）
 
 ## 更新履歴
+
+### 2026-08-10: SPA遷移時のハイライトキャッシュ不整合を修正
+- **不具合**: 動画ページ／ショートページなど別のYouTubeページから登録チャンネルページ（`/feed/subscriptions`）に戻ると、遷移前にキャッシュされた未視聴／視聴済みステータスがそのまま残り、実際には視聴済みになった動画が未視聴として扱われ続ける問題を修正
+- **原因**: `applySimpleHighlighting()` は判定コストを抑えるため動画要素へ `dataset.simpleHighlightProcessed` フラグを立てて判定結果（`dataset.videoStatus`）をキャッシュしているが、これを無効化するはずの `startSimpleHighlightObserver()` 内のMutationObserverコールバックが `if (!el.dataset.simpleHighlightProcessed) { delete el.dataset.simpleHighlightProcessed; }` という条件反転（未処理要素からフラグを消す＝実質何もしない）になっており、DOM変化時にキャッシュが破棄されていなかった。YouTubeのSPAナビゲーションで `ytd-rich-item-renderer` 要素がDOM上で使い回された場合、この壊れたキャッシュが遷移後も残ってしまう
+- **修正内容**:
+  - `resetSimpleHighlightCache()` 関数を新設し、`#contents ytd-rich-item-renderer` 全要素の `simpleHighlightProcessed` / `videoStatus` キャッシュを確実に破棄するよう修正
+  - `handleUrlChangeForHighlighting()` を新設し、SPA遷移（`history.pushState` / `history.replaceState` フック内、および `popstate` イベント）のたびにキャッシュを破棄。登録チャンネルページに戻った場合は `startSimpleHighlightObserver()` を再起動して確実に再判定させ、それ以外のページに遷移した場合はオブザーバーを停止しカウントオーバーレイを除去する
+  - 併せて `pushstate` / `replacestate` というカスタムイベントが（`dispatchEvent` されておらず）実際には一度も発火しない死んだリスナーだった点を確認。今回の修正では `history.pushState`/`replaceState` のフック内から直接呼び出す形で対応（既存の `updatePlaylistPanelForNewVideo` と同じ呼び出しパターンに合わせた）
+
+### 2026-08-08: 関連動画欄の非表示・通信量削減機能追加
+- **設定項目追加**: `hideRelatedVideos`（デフォルト`true`）。popup.htmlに「関連動画欄」セクションを新設し、ON/OFF切り替え可能に（要ページ再読み込み）
+- **CSSによる早期非表示**: `manifest.json` の `content_scripts` を分割し、`highlight.css` を `document_start` タイミングで先に注入するよう変更（従来は `content.js` と同じ `document_idle`）。`body.youtube-unwatched-opener-hide-related #related { display: none !important; }` を追加し、動画ページ右側の関連動画欄（`#related`）をHTML構築の早い段階から非表示にする
+- **通信量削減の仕組み**: `display:none` の要素はブラウザのIntersectionObserverが交差判定しないため、YouTube側のサムネイル遅延読み込み（`img`要素への`src`設定）自体が発火しなくなり、非表示だけでなく通信量削減にもつながる。念のため `content.js` に `removeRelatedVideosRenderer()` / `initializeRelatedVideosBlocker()` を追加し、`ytd-watch-next-secondary-results-renderer` をDOMから完全に削除する保険処理も併用
+- プレイリストパネル（`#playlist`）・ライブチャット（`#chat-container`）など `#secondary-inner` 内の他要素には影響しない（`#related` のみを対象化）
+
+### 2026-08-08: シークバー常時表示機能追加
+- **動画プレイヤーの下部コントロールバー常時表示**: `highlight.css` にCSSルールを追加し、マウス操作がない自動非表示（`.ytp-autohide`）状態でも `.ytp-chrome-bottom`（シークバー・各種ボタン・背景グラデーション）を常に表示するよう変更
+- **コントロールバーの位置調整**: `bottom: 0` / `padding-bottom: 0` により、コントロールバーが動画最下部にぴったりフィットするよう調整（浮き解消）
+- **不具合修正（シーク位置が更新されなくなる問題・2段階）**:
+  - 試行1: CSSで `.ytp-progress-bar-container` に `pointer-events` / `transform` を強制 → YouTube側が「ユーザー操作中」と誤認識し、進捗更新（`.ytp-play-progress` の `scaleX` アニメーション）が停止。pointer-events/transformの強制を撤廃。
+  - 試行2: `.ytp-autohide` クラス自体をMutationObserverで検知して都度除去する方式に変更 → 表示は常時されるが、進捗更新の停止は再発。マウスを動かすと一時的に追いつく挙動から、YouTube内部の進捗再計算はDOM classではなく「直近にmousemoveイベントが発生したか」という内部の操作中フラグをトリガーにしていると判明。
+  - 現在の実装: `startSeekBarKeepAlive()` を追加し、動画再生中は800ms間隔でプレイヤーへ微小な `mousemove` イベントを疑似発行してYouTube自身に「操作中」と認識させ続けることで、内部の進捗更新ロジックを正常に動作させる（`.ytp-autohide` クラス除去・CSSのopacity/visibility上書きは表示保証のフォールバックとして併用）
+- 既存の `injectCSS()` の仕組み（`highlight.css` を全ページに読み込み）をそのまま利用
 
 ### 2026-03-08: 自動削除機能の削除・ポップアップリデザイン
 - **自動削除機能を削除**: `autoRemoveWatchLater` / `watchLaterRemovalTime` 設定、`monitorVideoProgress()` / `removeFromWatchLater()` / `checkAndRemoveFromWatchLater()` 関数を完全削除

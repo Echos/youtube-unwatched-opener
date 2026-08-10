@@ -1,9 +1,48 @@
 {
   "permissions": {
     "allow": [
-      "mcp__playwright__browser_wait_for"
+      "mcp__playwright__browser_wait_for",
+      "mcp__playwright__browser_evaluate",
+      "mcp__playwright__browser_resize",
+      "mcp__playwright__browser_console_messages",
+      "Bash(echo:*)",
+      "Bash(wmctrl:*)",
+      "Bash(pkill:*)",
+      "Read(//tmp/**)",
+      "Bash(python3:*)",
+      "Bash(/dev/null)",
+      "Bash(awk:*)",
+      "Bash(xargs -r kill -9 sleep 2 echo \"Chromeプロセス終了\")",
+      "mcp__serena__get_symbols_overview",
+      "mcp__serena__activate_project",
+      "Skill(docs)",
+      "Bash(git -C /home/echos/dev/youtube-unwatched-opener log --oneline -10)",
+      "Bash(git -C /home/echos/dev/youtube-unwatched-opener diff --stat HEAD)",
+      "Bash(git -C /home/echos/dev/youtube-unwatched-opener status)",
+      "Bash(git -C /home/echos/dev/youtube-unwatched-opener diff HEAD -- .gitignore background.js manifest.json)",
+      "Bash(node --check /home/echos/dev/youtube-unwatched-opener/content.js)",
+      "Bash(node --check content.js)",
+      "Bash(git stash:*)",
+      "Bash(git merge:*)",
+      "Bash(git remote:*)",
+      "Bash(git push:*)",
+      "mcp__claude-in-chrome__list_connected_browsers",
+      "mcp__claude-in-chrome__tabs_context_mcp",
+      "mcp__claude-in-chrome__navigate",
+      "mcp__claude-in-chrome__read_console_messages",
+      "mcp__claude-in-chrome__javascript_tool",
+      "mcp__claude-in-chrome__computer",
+      "Bash(node -c content.js)",
+      "Bash(where node *)",
+      "mcp__claude-in-chrome__tabs_close_mcp",
+      "mcp__claude-in-chrome__tabs_create_mcp",
+      "Bash(find /c/Users/echos/AppData/Local/mise/installs/node -maxdepth 2 -name \"node.exe\" 2>/dev/null)",
+      "Bash(\"/c/Users/echos/AppData/Local/mise/installs/node/25.6.1/node.exe\" --check content.js)"
     ],
     "deny": [],
     "ask": []
-  }
+  },
+  "enabledMcpjsonServers": [
+    "serena"
+  ]
 }

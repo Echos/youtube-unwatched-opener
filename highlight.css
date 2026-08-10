@@ -355,11 +355,44 @@ html[data-theme="dark"] #youtube-unwatched-opener-playlist-panel .panel-header h
   color: #fff !important;
 }
 
+#youtube-unwatched-opener-playlist-panel .panel-header-titles {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 2px !important;
+  min-width: 0 !important;
+}
+
 #youtube-unwatched-opener-playlist-panel .panel-header h3 {
   margin: 0 !important;
   font-size: 14px !important;
   font-weight: 600 !important;
   color: #333 !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .watchlater-status {
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  line-height: 1.4 !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .watchlater-status.added {
+  color: #1e8e3e !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .watchlater-status.not-added {
+  color: #666 !important;
+}
+
+html[dark] #youtube-unwatched-opener-playlist-panel .watchlater-status.added,
+html[data-theme="dark"] #youtube-unwatched-opener-playlist-panel .watchlater-status.added,
+[dark] #youtube-unwatched-opener-playlist-panel .watchlater-status.added {
+  color: #81c995 !important;
+}
+
+html[dark] #youtube-unwatched-opener-playlist-panel .watchlater-status.not-added,
+html[data-theme="dark"] #youtube-unwatched-opener-playlist-panel .watchlater-status.not-added,
+[dark] #youtube-unwatched-opener-playlist-panel .watchlater-status.not-added {
+  color: #9aa0a6 !important;
 }
 
 #youtube-unwatched-opener-playlist-panel #toggle-playlist-panel {
@@ -604,4 +637,45 @@ tp-yt-iron-overlay-backdrop.opened {
 
 #youtube-unwatched-opener-count-overlay .yuo-watched span:last-child {
   color: #9aa0a6 !important;
+}
+
+/* ============================================================
+   動画プレイヤー: シークバー（下部コントロールバー）常時表示
+   ============================================================ */
+/* 常時表示の主実装は content.js 側で .ytp-autohide クラス自体を
+   都度除去する方式（YouTube本来の「操作中」表示状態をそのまま維持するため）。
+   下記はJS処理が間に合わない一瞬のフォールバック表示のみを目的とし、
+   pointer-events / transform は上書きしない
+   （progress-bar-container 側に適用すると、YouTube内部が「ユーザー操作中」と
+   誤認識し、再生位置に応じたシークバー更新が止まる不具合が確認されたため）。 */
+.html5-video-player.ytp-autohide .ytp-chrome-bottom,
+.html5-video-player.ytp-autohide .ytp-gradient-bottom,
+.html5-video-player.ytp-autohide .ytp-progress-bar-container {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+/* コントロールバーを動画最下部にぴったりフィットさせる（浮きを解消） */
+.html5-video-player .ytp-chrome-bottom {
+  bottom: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+.html5-video-player .ytp-progress-bar-container {
+  bottom: 0 !important;
+}
+
+/* ============================================================
+   関連動画（おすすめ動画）欄の非表示・通信量削減
+   ============================================================ */
+/* body側にクラスが付与されている間、右サイドバーの関連動画欄を
+   レイアウトから完全に除外する。display:none によりブラウザの
+   IntersectionObserverベースの遅延読み込みが発火しなくなるため、
+   サムネイル画像の通信自体が発生しなくなる（表示を隠すだけでなく
+   通信量削減にも寄与する）。プレイリストパネル（#playlist）や
+   ライブチャット（#chat-container）は対象外。
+   早期適用のため、このCSSファイルは manifest.json で
+   document_start タイミングに読み込まれるよう設定している。 */
+body.youtube-unwatched-opener-hide-related #related {
+  display: none !important;
 }

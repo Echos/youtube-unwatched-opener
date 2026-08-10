@@ -17,8 +17,12 @@
   "content_scripts": [
     {
       "matches": ["https://www.youtube.com/*"],
-      "js": ["browser-polyfill.js", "content.js"],
       "css": ["highlight.css"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["browser-polyfill.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

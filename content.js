@@ -8,7 +8,8 @@ const DEFAULT_SETTINGS = {
   showPlaylistPanel: true,
   debugMode: false,  // デバッグモード（詳細ログ出力のON/OFF）
   historyMaxCount: 10000,  // 視聴履歴の最大保持件数
-  includeShorts: true  // 未視聴動画オープナーでショート動画を含めるか
+  includeShorts: true,  // 未視聴動画オープナーでショート動画を含めるか
+  hideRelatedVideos: true  // 動画ページ右側の関連動画欄を非表示にするか（データ通信量削減）
 };
 
 let settings = DEFAULT_SETTINGS;
@@ -80,6 +81,13 @@ function waitForElement(selector, options = {}) {
       reject(new Error(`waitForElement timeout: ${selector}`));
     }, timeout);
   });
+}
+
+// 登録チャンネルページ（通常フィード／ショートフィード）かどうかを判定
+function isSubscriptionsFeedPage(pathname = window.location.pathname) {
+  return pathname === '/feed/subscriptions' ||
+         pathname === '/feed/subscriptions/' ||
+         pathname.startsWith('/feed/subscriptions/shorts');
 }
 
 function parseShortcut(shortcutStr) {
@@ -651,15 +659,10 @@ function findPlaylistVideos() {
 }
 
 function findUnwatchedVideos() {
-  // ページ制限: 未視聴動画検索は登録チャンネルページでのみ動作
-  const allowedPages = [
-    '/feed/subscriptions',    // 登録チャンネルページ（メイン対象）
-    '/feed/subscriptions/',   // トレイリングスラッシュ対応
-  ];
-  
+  // ページ制限: 未視聴動画検索は登録チャンネルページ（ショートフィード含む）でのみ動作
   const currentPath = window.location.pathname;
-  const isAllowedPage = allowedPages.some(page => currentPath === page || currentPath.startsWith(page));
-  
+  const isAllowedPage = isSubscriptionsFeedPage(currentPath);
+
   if (!isAllowedPage) {
     console.log(`[DEBUG] 未視聴動画検索スキップ: 対象外ページ (${currentPath})`);
     console.log(`[INFO] 未視聴動画オープナーは登録チャンネルページ（/feed/subscriptions）でのみ動作します。`);
@@ -808,7 +811,7 @@ document.addEventListener('keydown', function(event) {
     const urlParams = new URLSearchParams(window.location.search);
     const isWatchLaterPlaylist = currentPath === '/playlist' && urlParams.get('list') === 'WL';
 
-    if (currentPath === '/feed/subscriptions' || isWatchLaterPlaylist) {
+    if (isSubscriptionsFeedPage(currentPath) || isWatchLaterPlaylist) {
       openUnwatchedVideos();
     }
   }
@@ -851,7 +854,7 @@ document.addEventListener('keydown', function(event) {
 
 browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'getUnwatchedCount') {
-    if (window.location.pathname === '/feed/subscriptions') {
+    if (isSubscriptionsFeedPage()) {
       const unwatchedVideos = findUnwatchedVideos();
       sendResponse({ count: unwatchedVideos.length });
     } else {
@@ -1331,9 +1334,129 @@ function outputYouTubeStructureInfo() {
 function initializeHighlighting() {
   injectCSS();
   updateHighlighting();
-  
+
   // ハイライト専用Observerは削除 - メインObserverに統合済み
   // 重複実行を防ぐためコメントアウト
+}
+
+// ============================================================
+// シークバー（下部コントロールバー）常時表示機能
+// ============================================================
+// 【試行1】CSSのopacity/visibility上書きのみ → YouTube内部が「マウス操作なし」と
+// 判定したまま（.ytp-autohideクラスが付いたまま）になり、進捗更新（play-progressの
+// scaleXアニメーション）が停止する不具合が発生。
+// 【試行2】.ytp-autohideクラス自体をJS側で都度除去する方式に変更 → 表示は常時
+// されるようになったが、進捗更新の停止は再発。マウスを動かすと一時的に追いつく
+// ことから、YouTube内部の進捗再計算はDOM classではなく「直近にmousemoveイベントが
+// 発生したか」という内部状態（操作中フラグ）をトリガーにしていると判明。
+// 【現在の実装】.ytp-autohideクラスの除去に加えて、動画再生中は定期的に微小な
+// mousemoveイベントをプレイヤーへ疑似発行し、YouTube自身に「操作中」と認識させ
+// 続けることで、内部の進捗更新ロジックを正常に動作させ続ける。
+function attachPersistentSeekBarObserver(player) {
+  if (!player || player.dataset.yuoAutohideObserved) {
+    return;
+  }
+  player.dataset.yuoAutohideObserved = 'true';
+
+  const removeAutohide = () => {
+    if (player.classList.contains('ytp-autohide')) {
+      player.classList.remove('ytp-autohide');
+    }
+  };
+
+  removeAutohide();
+
+  const observer = new MutationObserver(removeAutohide);
+  observer.observe(player, { attributes: true, attributeFilter: ['class'] });
+}
+
+// 動画再生中、YouTube自身の「操作中」判定を維持するため微小なmousemoveを疑似発行する
+function startSeekBarKeepAlive() {
+  let toggle = false;
+  setInterval(() => {
+    const video = document.querySelector('video.html5-main-video');
+    if (!video || video.paused || video.ended) {
+      return;
+    }
+
+    const player = document.querySelector('.html5-video-player');
+    if (!player) {
+      return;
+    }
+
+    const rect = player.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
+      return;
+    }
+
+    // シークバーのホバープレビューを誘発しないよう、動画中央付近の座標をわずかに揺らす
+    toggle = !toggle;
+    const x = rect.left + rect.width / 2 + (toggle ? 1 : -1);
+    const y = rect.top + rect.height / 2 + (toggle ? 1 : -1);
+
+    const mouseMoveEvent = new MouseEvent('mousemove', {
+      bubbles: true,
+      cancelable: true,
+      clientX: x,
+      clientY: y
+    });
+    player.dispatchEvent(mouseMoveEvent);
+  }, 800);
+}
+
+function initializePersistentSeekBar() {
+  document.querySelectorAll('.html5-video-player').forEach(attachPersistentSeekBarObserver);
+
+  // SPA遷移やミニプレイヤー表示など、動的に追加されるプレイヤーに対応
+  const bodyObserver = new MutationObserver(() => {
+    document.querySelectorAll('.html5-video-player').forEach(attachPersistentSeekBarObserver);
+  });
+  bodyObserver.observe(document.body, { childList: true, subtree: true });
+
+  startSeekBarKeepAlive();
+}
+
+// ============================================================
+// 関連動画（おすすめ動画）欄の非表示・通信量削減機能
+// ============================================================
+// #related はCSS側（highlight.css、document_startで早期注入）で
+// display:none にすることで、ブラウザのIntersectionObserverベースの
+// サムネイル遅延読み込みを未然に防ぎ、通信量そのものを削減する。
+// 加えて、保険としてレンダラー要素自体をDOMから削除し、より確実に
+// 通信の発生を防ぐ（プレイリストパネル・ライブチャットは対象外）。
+function removeRelatedVideosRenderer() {
+  const related = document.querySelector('#related');
+  if (!related) {
+    return;
+  }
+
+  const renderer = related.querySelector('ytd-watch-next-secondary-results-renderer');
+  if (renderer && !renderer.dataset.yuoRemoved) {
+    renderer.dataset.yuoRemoved = 'true';
+    renderer.remove();
+    debugLogController.log('[関連動画] レンダラーをDOMから削除しました（通信量削減）');
+  }
+}
+
+function applyHideRelatedVideos() {
+  if (settings.hideRelatedVideos) {
+    document.body.classList.add('youtube-unwatched-opener-hide-related');
+    removeRelatedVideosRenderer();
+  } else {
+    document.body.classList.remove('youtube-unwatched-opener-hide-related');
+  }
+}
+
+function initializeRelatedVideosBlocker() {
+  applyHideRelatedVideos();
+
+  // SPA遷移で#relatedが再生成された場合にも対応
+  const observer = new MutationObserver(() => {
+    if (settings.hideRelatedVideos) {
+      removeRelatedVideosRenderer();
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
 }
 
 function toggleHighlighting() {
@@ -1359,7 +1482,6 @@ const playlistPanelState = new WeakMap();
 const PLAYLIST_DIALOG_SELECTORS = [
   '.ytContextualSheetLayoutContentContainer',
   '[class*="ytContextualSheetLayoutContentContainer"]',
-  'tp-yt-iron-dropdown',
   'ytd-add-to-playlist-renderer',
   'ytd-popup-container ytd-add-to-playlist-renderer',
   'yt-save-video-to-playlist-modal-view-model',
@@ -1367,30 +1489,42 @@ const PLAYLIST_DIALOG_SELECTORS = [
 ];
 
 // ダイアログの有効性検証
+// 「実際のプレイリスト項目（後で見る等）を含むこと」を必須条件とすることで、
+// 空のラッパー等を誤って valid と判定しないようにする。
 function isValidPlaylistDialog(el) {
-  if (!el || el.offsetWidth === 0 || el.offsetHeight === 0) return false;
+  if (!el) return false;
+  if (el.offsetWidth === 0 || el.offsetHeight === 0) {
+    console.log('[DEBUG isValidPlaylistDialog] reject: 0サイズ', el.tagName, el.className);
+    return false;
+  }
   const style = window.getComputedStyle(el);
-  if (style.display === 'none' || style.visibility === 'hidden') return false;
-  const tagName = el.tagName ? el.tagName.toLowerCase() : '';
-  if (tagName === 'ytd-add-to-playlist-renderer') {
-    return el.children.length > 0 || el.shadowRoot !== null;
+  if (style.display === 'none' || style.visibility === 'hidden') {
+    console.log('[DEBUG isValidPlaylistDialog] reject: 非表示', el.tagName, el.className);
+    return false;
   }
-  if (tagName === 'tp-yt-iron-dropdown') {
-    return el.children.length > 0;
+  const itemSelectors =
+    'toggleable-list-item-view-model, yt-list-item-view-model, ytd-playlist-add-to-option-renderer';
+  const items = el.querySelectorAll(itemSelectors);
+  let hasWatchLater = false;
+  for (const item of items) {
+    const t = (item.innerText || item.textContent || item.getAttribute('aria-label') || '').toLowerCase();
+    if (t.includes('watch later') || t.includes('後で見る') || t.includes('あとで見る')) {
+      hasWatchLater = true;
+      break;
+    }
   }
-  if (el.querySelector('ytd-add-to-playlist-renderer') !== null) return true;
-  if (el.querySelectorAll('tp-yt-paper-checkbox, input[type="checkbox"], [role="checkbox"]').length > 0) return true;
-  for (const item of el.getElementsByTagName('toggleable-list-item-view-model')) {
-    const t = (item.innerText || '').toLowerCase();
-    if (t.includes('watch later') || t.includes('後で見る')) return true;
-  }
-  return false;
+  console.log(`[DEBUG isValidPlaylistDialog] ${el.tagName}.${el.className} | itemCount=${items.length} | hasWatchLater=${hasWatchLater} | innerHTML.length=${el.innerHTML.length}`);
+  if (!hasWatchLater) return false;
+  if (items.length < 3) return false;
+  return true;
 }
 
 // プレイリストダイアログの出現を MutationObserver で待機
 // preClickVisible: クリック前から可視だった要素の Set（誤検出防止）
 function waitForPlaylistDialog(timeout = 8000, preClickVisible = new Set()) {
-  const isNew = (el) => !preClickVisible.has(el) && isValidPlaylistDialog(el);
+  const ownPanel = document.getElementById(PANEL_ID);
+  // 自パネル内の要素は除外（クローン要素を誤検知しないため）
+  const isNew = (el) => !preClickVisible.has(el) && !(ownPanel && ownPanel.contains(el)) && isValidPlaylistDialog(el);
   return new Promise((resolve, reject) => {
     for (const sel of PLAYLIST_DIALOG_SELECTORS) {
       for (const el of document.querySelectorAll(sel)) {
@@ -1470,12 +1604,82 @@ function forwardClickToOriginal(event, originalDialog) {
   (shadowBtn || childBtn || originalTarget).click();
 }
 
+// 「後で見る」項目の現在の選択状態を判定する（true=追加済み / false=未追加 / null=判定不可）
+function getWatchLaterItemState(originalDialog) {
+  const items = originalDialog.querySelectorAll(
+    'toggleable-list-item-view-model, yt-list-item-view-model, ytd-playlist-add-to-option-renderer'
+  );
+  for (const item of items) {
+    const text = (item.textContent || item.getAttribute('aria-label') || '').toLowerCase();
+    if (!text.includes('後で見る') && !text.includes('watch later') && !text.includes('あとで見る')) continue;
+
+    const inner = item.querySelector(
+      '[role="checkbox"], input[type="checkbox"], tp-yt-paper-checkbox, yt-checkbox-shape, yt-list-item-view-model, button'
+    ) || item;
+    const ariaChecked = inner.getAttribute('aria-checked') ?? item.getAttribute('aria-checked');
+    if (ariaChecked === 'true') return true;
+    if (ariaChecked === 'false') return false;
+
+    const ariaPressed = inner.getAttribute('aria-pressed') ?? item.getAttribute('aria-pressed');
+    if (ariaPressed === 'true') return true;
+    if (ariaPressed === 'false') return false;
+
+    // 新UI（Material 3）は aria-label 内の文言で選択状態を表す
+    // 例: "Watch later, 非公開, 選択されていません" / "..., 選択済み"
+    const ariaLabel = (item.getAttribute('aria-label') || inner.getAttribute('aria-label') || '').toLowerCase();
+    if (ariaLabel.includes('選択されていません') || ariaLabel.includes('not selected') || ariaLabel.includes('unselected')) {
+      return false;
+    }
+    if (ariaLabel.includes('選択済み') || ariaLabel.includes('selected')) return true;
+
+    // 旧UI（ytd-playlist-add-to-option-renderer）は checked プロパティを持つ
+    if ('checked' in inner) return !!inner.checked;
+
+    return null;
+  }
+  return null;
+}
+
+// パネルヘッダーの「後で見る」ステータス表示を更新
+function updateWatchLaterStatusBadge(panel, originalDialog) {
+  const badge = panel.querySelector('#playlist-panel-watchlater-status');
+  if (!badge) return;
+  const state = getWatchLaterItemState(originalDialog);
+  if (state === true) {
+    badge.textContent = '後で見るに追加済み';
+    badge.className = 'watchlater-status added';
+  } else if (state === false) {
+    badge.textContent = '後で見るに未追加';
+    badge.className = 'watchlater-status not-added';
+  } else {
+    badge.textContent = '';
+    badge.className = 'watchlater-status';
+  }
+}
+
 // オリジナルダイアログの変化を監視してクローンを自動更新
 function setupCloneSync(panel, originalDialog) {
   const container = panel.querySelector('.playlist-dialog-container');
   let syncTimeout = null;
   const doSync = () => {
-    if (!document.contains(panel)) return;
+    if (!document.contains(panel) || !document.contains(originalDialog)) {
+      console.log(`[DEBUG doSync] スキップ panelInDoc=${document.contains(panel)} origInDoc=${document.contains(originalDialog)}`);
+      return;
+    }
+    // 診断: 後で見る項目の aria-pressed と aria-label
+    const wlItem = Array.from(originalDialog.querySelectorAll(
+      'toggleable-list-item-view-model, yt-list-item-view-model, ytd-playlist-add-to-option-renderer'
+    )).find(it => {
+      const t = (it.textContent || '').toLowerCase();
+      return t.includes('後で見る') || t.includes('watch later') || t.includes('あとで見る');
+    });
+    if (wlItem) {
+      const inner = wlItem.querySelector('yt-list-item-view-model, button');
+      const ariaPressed = inner ? inner.getAttribute('aria-pressed') : wlItem.getAttribute('aria-pressed');
+      const ariaLabel = inner ? inner.getAttribute('aria-label') : wlItem.getAttribute('aria-label');
+      console.log(`[DEBUG doSync] 後で見る aria-pressed=${ariaPressed} aria-label="${ariaLabel}"`);
+    }
+    updateWatchLaterStatusBadge(panel, originalDialog);
     const newClone = buildStyledClone(originalDialog);
     newClone.addEventListener('click', (e) => forwardClickToOriginal(e, originalDialog));
     container.innerHTML = '';
@@ -1492,16 +1696,39 @@ function setupCloneSync(panel, originalDialog) {
     attributeFilter: ['aria-checked', 'checked', 'class']
   });
   // オリジナルが DOM から消えた場合は再取得
-  // subtree: true で ytd-popup-container 内部の削除も検知する
-  const bodyObserver = new MutationObserver(() => {
+  // また、パネル表示中に別の保存ボタン操作で新ダイアログが出現した場合も捕捉する
+  const bodyObserver = new MutationObserver((mutations) => {
+    // オリジナルが DOM から消えた場合
     if (!document.contains(originalDialog)) {
       bodyObserver.disconnect();
       syncObserver.disconnect();
       if (document.contains(panel)) embedPlaylistDialog(panel);
+      return;
+    }
+    // 新しいプレイリストダイアログが出現した場合（保存ボタン再クリック等）
+    for (const mutation of mutations) {
+      for (const addedNode of mutation.addedNodes) {
+        if (addedNode.nodeType !== 1) continue;
+        for (const sel of PLAYLIST_DIALOG_SELECTORS) {
+          const candidates = (addedNode.matches && addedNode.matches(sel))
+            ? [addedNode]
+            : Array.from(addedNode.querySelectorAll ? addedNode.querySelectorAll(sel) : []);
+          for (const el of candidates) {
+            // 自パネル内のクローン要素は誤検知除外
+            if (el !== originalDialog && !panel.contains(el) && isValidPlaylistDialog(el)) {
+              console.log('[INFO] プレイリストパネル: 新しいダイアログを検出、切り替えます');
+              bodyObserver.disconnect();
+              syncObserver.disconnect();
+              mountDialogClone(panel, el);
+              return;
+            }
+          }
+        }
+      }
     }
   });
   bodyObserver.observe(document.body, { childList: true, subtree: true });
-  return { syncObserver, bodyObserver };
+  return { syncObserver, bodyObserver, resync: doSync };
 }
 
 // クローンをパネルにマウント。オリジナルは元の DOM 位置のままオフスクリーンに保持
@@ -1515,17 +1742,44 @@ function mountDialogClone(panel, originalDialog) {
   originalDialog.style.left = '-9999px';
   originalDialog.style.top = '-9999px';
   originalDialog.style.opacity = '0';
-  // オーバーレイ（背景暗転）を削除
+  // 親のポップアップコンテナも非表示にする（tp-yt-paper-dialog 等が残ると可視ポップアップになる）
+  // visibility: hidden でレイアウトを維持しつつ非表示にする（display:none は Polymer を壊す可能性）
+  const dialogWrapper = originalDialog.closest(
+    'tp-yt-paper-dialog, yt-sheet-view-model, tp-yt-iron-dropdown'
+  );
+  if (dialogWrapper && dialogWrapper !== originalDialog) {
+    dialogWrapper.style.visibility = 'hidden';
+    dialogWrapper.style.pointerEvents = 'none';
+  }
+  // オーバーレイ（背景暗転）を削除、以降追加されるものも即時削除するObserverを起動
   document.querySelectorAll('tp-yt-iron-overlay-backdrop, iron-overlay-backdrop, .scrim')
     .forEach(el => el.remove());
+  const backdropObserver = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        const tag = node.tagName.toLowerCase();
+        if (tag === 'tp-yt-iron-overlay-backdrop' || tag === 'iron-overlay-backdrop' ||
+            (node.classList && node.classList.contains('scrim'))) {
+          node.style.display = 'none';
+        }
+      }
+    }
+  });
+  backdropObserver.observe(document.body, { childList: true });
   // クローンを生成してパネルにマウント
   const clone = buildStyledClone(originalDialog);
   clone.addEventListener('click', (e) => forwardClickToOriginal(e, originalDialog));
+  console.log(`[DEBUG mountDialogClone] container.innerHTML='' 実行直前 children=${container.children.length}`);
   container.innerHTML = '';
+  console.log(`[DEBUG mountDialogClone] container.innerHTML='' 実行直後 children=${container.children.length}`);
   container.appendChild(clone);
+  console.log(`[DEBUG mountDialogClone] appendChild 直後 children=${container.children.length} firstChild=${container.firstElementChild && container.firstElementChild.tagName}`);
+  // 「後で見る」の現在の状態をヘッダーに反映
+  updateWatchLaterStatusBadge(panel, originalDialog);
   // 同期機構を開始して状態を保存
-  const { syncObserver, bodyObserver } = setupCloneSync(panel, originalDialog);
-  playlistPanelState.set(panel, { originalDialog, syncObserver, bodyObserver });
+  const { syncObserver, bodyObserver, resync } = setupCloneSync(panel, originalDialog);
+  playlistPanelState.set(panel, { originalDialog, dialogWrapper: dialogWrapper || null, backdropObserver, syncObserver, bodyObserver, resync });
   // フォーカスを元の要素に戻す
   setTimeout(() => {
     if (savedFocusBeforePlaylistPanel && document.contains(savedFocusBeforePlaylistPanel)) {
@@ -1542,38 +1796,67 @@ function mountDialogClone(panel, originalDialog) {
 function teardownPlaylistPanel(panel) {
   const state = playlistPanelState.get(panel);
   if (!state) return;
-  const { originalDialog, syncObserver, bodyObserver } = state;
+  const { originalDialog, dialogWrapper, backdropObserver, syncObserver, bodyObserver } = state;
   if (syncObserver) syncObserver.disconnect();
   if (bodyObserver) bodyObserver.disconnect();
+  if (backdropObserver) backdropObserver.disconnect();
   if (panel._fallbackObserver) {
     panel._fallbackObserver.disconnect();
     panel._fallbackObserver = null;
   }
   // オリジナルダイアログのスタイルをリセットして YouTube の閉じる機構で閉じる
   if (originalDialog && document.contains(originalDialog)) {
-    originalDialog.style.position = '';
-    originalDialog.style.left = '';
-    originalDialog.style.top = '';
-    originalDialog.style.opacity = '';
-    // 閉じるボタンをクリックして YouTube 側の状態を正常にクローズ
-    const closeBtn = originalDialog.querySelector(
-      '#close-button button, button[aria-label*="閉じる"], button[aria-label*="Close"], button[aria-label*="Cancel"]'
-    );
-    if (closeBtn) {
-      closeBtn.click();
+    // YouTube 側の状態を正常にクローズ
+    // 新UI（yt-sheet-view-model / ytContextualSheetLayoutContentContainer）には
+    // 従来の閉じるボタンが存在しないため、dialogWrapper（tp-yt-iron-dropdown 等）の
+    // iron-overlay-behavior 由来の close() を使う。
+    if (dialogWrapper && document.contains(dialogWrapper) && typeof dialogWrapper.close === 'function') {
+      dialogWrapper.close();
     } else {
-      originalDialog.style.display = 'none';
+      const closeBtn = originalDialog.querySelector(
+        '#close-button button, button[aria-label*="閉じる"], button[aria-label*="Close"], button[aria-label*="Cancel"]'
+      );
+      if (closeBtn) closeBtn.click();
+    }
+    // originalDialog / dialogWrapper のインラインスタイルを丸ごと除去する。
+    // position/opacity 等の個別プロパティだけをリセットしても、YouTube 側が
+    // クローズ時に max-height 等の別プロパティをインラインで残すため、
+    // それが残留したまま次の動画でダイアログが開けなくなる（サイズ0のまま固着する）。
+    // YouTube は再オープン時に必要なスタイルを自身で再計算・再設定するため、
+    // 丸ごと除去しても問題ない。
+    originalDialog.removeAttribute('style');
+    if (dialogWrapper && document.contains(dialogWrapper)) {
+      dialogWrapper.removeAttribute('style');
     }
   }
   playlistPanelState.delete(panel);
 }
 
-// 直接表示の保存ボタンを検索
+// ボタンが実際に画面上に表示されているか確認
+function isButtonVisible(button) {
+  if (!button) return false;
+  if (button.offsetWidth === 0 && button.offsetHeight === 0) return false;
+  const style = window.getComputedStyle(button);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  // 祖先要素が非表示でないか確認
+  let el = button.parentElement;
+  while (el && el !== document.body) {
+    const s = window.getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden') return false;
+    el = el.parentElement;
+  }
+  return true;
+}
+
+// 直接表示の保存ボタンを検索（可視状態のもののみ）
 function findDirectSaveButton() {
   const selectors = [
-    'button[aria-label*="Watch later"]',
-    'button[aria-label*="Save"]',
-    'button[aria-label*="保存"]',
+    // 新しいYouTube UI（yt-button-shape / yt-button-view-model）
+    'ytd-watch-metadata #actions yt-button-shape button[aria-label*="Save"]',
+    'ytd-watch-metadata #actions yt-button-shape button[aria-label*="保存"]',
+    'ytd-watch-metadata #actions yt-button-view-model button[aria-label*="Save"]',
+    'ytd-watch-metadata #actions yt-button-view-model button[aria-label*="保存"]',
+    // 従来のUI
     '#actions button[aria-label*="Watch later"]',
     '#actions button[aria-label*="Save"]',
     '#actions button[aria-label*="保存"]',
@@ -1582,40 +1865,57 @@ function findDirectSaveButton() {
     '#top-level-buttons button[aria-label*="保存"]',
     'ytd-button-renderer button[aria-label*="Watch later"]',
     'ytd-button-renderer button[aria-label*="Save"]',
-    'ytd-button-renderer button[aria-label*="保存"]'
+    'ytd-button-renderer button[aria-label*="保存"]',
+    // フォールバック
+    'button[aria-label*="Watch later"]',
+    'button[aria-label*="Save"]',
+    'button[aria-label*="保存"]'
   ];
   for (const selector of selectors) {
     for (const button of document.querySelectorAll(selector)) {
       const label = (button.getAttribute('aria-label') || '').toLowerCase();
       if (label.includes('保存') || label.includes('save') ||
           label.includes('watch later') || label.includes('watchlater')) {
-        return button;
+        if (isButtonVisible(button)) return button;
       }
     }
   }
   return null;
 }
 
-// 「その他の操作」メニューボタンを検索
+// 「その他の操作」メニューボタンを検索（可視状態のもののみ）
 function findPlaylistMenuButton() {
   const selectors = [
+    // 新しいYouTube UI（yt-button-shape）
+    'ytd-watch-metadata #actions yt-button-shape button[aria-label*="その他"]',
+    'ytd-watch-metadata #actions yt-button-shape button[aria-label*="More"]',
+    'ytd-watch-metadata #actions yt-button-view-model button[aria-label*="その他"]',
+    'ytd-watch-metadata #actions yt-button-view-model button[aria-label*="More"]',
+    // 従来のUI
     '#actions button[aria-label*="その他"]',
     '#actions button[aria-label*="More"]',
     '#top-level-buttons button[aria-label*="その他"]',
     '#top-level-buttons button[aria-label*="More"]',
     'button[aria-label*="その他の操作"]',
     'button[aria-label*="More actions"]',
-    'ytd-menu-renderer button',
     'ytd-button-renderer button[aria-label*="その他"]',
-    'ytd-button-renderer button[aria-label*="More"]'
+    'ytd-button-renderer button[aria-label*="More"]',
+    // フォールバック: #actionsの最後のボタン（三点リーダーは通常最後）
+    'ytd-watch-metadata #actions ytd-menu-renderer button'
   ];
   for (const selector of selectors) {
     for (const button of document.querySelectorAll(selector)) {
       const label = (button.getAttribute('aria-label') || '').toLowerCase();
       if (label.includes('その他') || label.includes('more')) {
-        return button;
+        if (isButtonVisible(button)) return button;
       }
     }
+  }
+  // セレクターでaria-labelが空のメニューボタンもフォールバックとして試みる
+  const menuRenderer = document.querySelector('ytd-watch-metadata #actions ytd-menu-renderer');
+  if (menuRenderer) {
+    const btn = menuRenderer.querySelector('button');
+    if (btn && isButtonVisible(btn)) return btn;
   }
   return null;
 }
@@ -1680,6 +1980,11 @@ async function findAndClickSaveButton() {
 
 // エラー表示と再試行ボタン、フォールバック Observer の設定
 function showPanelError(panel, message) {
+  const badge = panel.querySelector('#playlist-panel-watchlater-status');
+  if (badge) {
+    badge.textContent = '';
+    badge.className = 'watchlater-status';
+  }
   const container = panel.querySelector('.playlist-dialog-container');
   container.innerHTML = `
     <div class="error-message">
@@ -1799,9 +2104,41 @@ function handlePlaylistDialog(action = 'toggle') {
   });
 }
 
+// r キーでトグルした直後、YouTube の状態反映に時間差があるため
+// 複数タイミングでクローンを再構築して最終状態に追従させる
+function schedulePanelResync(panel, delays = [120, 400, 1000, 2000]) {
+  if (!panel || !document.contains(panel)) return;
+  for (const ms of delays) {
+    setTimeout(() => {
+      if (!document.contains(panel)) return;
+      const state = playlistPanelState.get(panel);
+      if (state && typeof state.resync === 'function') {
+        try {
+          state.resync();
+        } catch (e) {
+          console.log('[INFO] プレイリストパネル resync 失敗:', e && e.message);
+        }
+      }
+    }, ms);
+  }
+}
+
+// r キーでのトグル後、YouTube 側の反映を待ってからパネルを完全に再埋め込みする。
+// クローンの同期（resync）だけでは、合成クリックが YouTube 側に反映されなかった
+// 場合に誤った状態のまま固定されてしまうため、保存ボタンを再度クリックして
+// 新しいダイアログを取得し直すことで、常に実際のサーバー側の状態に合わせる。
+// keepCurrentContent により、取得完了までは既存表示を維持しちらつきを防ぐ。
+function scheduleFullReembed(panel, delay = 1800) {
+  setTimeout(() => {
+    if (!panel || !document.contains(panel)) return;
+    console.log('[後で見る切り替え] パネルを完全に再埋め込みして最新状態を取得');
+    embedPlaylistDialog(panel, { keepCurrentContent: true });
+  }, delay);
+}
+
 function toggleWatchLater() {
   console.log('[後で見る切り替え] toggleWatchLater関数開始');
-  
+
   // 1. プレイリストパネルがある場合はオリジナルダイアログを直接操作
   const playlistPanel = document.getElementById(PANEL_ID);
   if (playlistPanel) {
@@ -1815,14 +2152,18 @@ function toggleWatchLater() {
       for (const item of items) {
         const text = (item.textContent || item.getAttribute('aria-label') || '').toLowerCase();
         if (text.includes('後で見る') || text.includes('watch later') ||
-            text.includes('watchlater') || text.includes('wl') || text.includes('あとで見る')) {
+            text.includes('watchlater') || text.includes('あとで見る')) {
           console.log(`[後で見る切り替え] オリジナルダイアログの項目をクリック: ${item.tagName}`);
           // Shadow DOM 内のボタン/チェックボックスを優先してクリック
           const shadowBtn = item.shadowRoot &&
             item.shadowRoot.querySelector('button, [role="checkbox"], input, tp-yt-paper-checkbox, yt-checkbox-shape');
           const childBtn = item.querySelector('button, [role="checkbox"], input, tp-yt-paper-checkbox, yt-checkbox-shape');
           (shadowBtn || childBtn || item).click();
-          // setupCloneSync の MutationObserver が自動でクローンを更新する
+          // 既存 originalDialog はそのまま保持し、複数遅延でクローン再構築
+          schedulePanelResync(playlistPanel, [200, 600, 1200, 2000]);
+          // 合成クリックが YouTube 側に反映されていない場合に備え、
+          // 少し待ってから保存ダイアログを取得し直して最新状態に同期する
+          scheduleFullReembed(playlistPanel);
           return;
         }
       }
@@ -1834,47 +2175,29 @@ function toggleWatchLater() {
     console.log('[後で見る切り替え] プレイリストパネルが見つかりません');
   }
 
-  // 2. 直接表示されている「保存」ボタンを探す
-  const actionButtons = document.querySelectorAll(
-    'ytd-watch-metadata #actions button, ' +
-    'ytd-watch-metadata #actions yt-button-shape button, ' + 
-    '#actions button, ' +
-    '#menu-container button'
-  );
-
-  for (const button of actionButtons) {
-    const label = (button.getAttribute('aria-label') || button.textContent || '').toLowerCase();
-    if (label.includes('保存') || label.includes('save') || (label.includes('watch') && label.includes('later'))) {
-      console.log('[後で見る切り替え] 直接表示の保存ボタンをクリック');
-      button.click();
-      handlePlaylistDialog('toggle');
-      return;
+  // 2. 直接表示されている「保存」ボタンを探す（可視状態のもののみ）
+  const directSaveBtn = findDirectSaveButton();
+  if (directSaveBtn) {
+    console.log('[後で見る切り替え] 直接表示の保存ボタンをクリック');
+    directSaveBtn.click();
+    handlePlaylistDialog('toggle');
+    // 新ダイアログ経由になるため bodyObserver の再 mount 後にも resync が当たるよう長めに刻む
+    const panel = document.getElementById(PANEL_ID);
+    if (panel) {
+      schedulePanelResync(panel, [300, 800, 1600, 2500]);
+      scheduleFullReembed(panel);
     }
+    return;
   }
 
   // 3. メニュー（三点リーダー）内の保存ボタンを探す
-  const menuButtons = document.querySelectorAll(
-    'ytd-watch-metadata #actions button[aria-label*="More"], ' +
-    'ytd-watch-metadata #actions button[aria-label*="その他"], ' +
-    'button[aria-label*="More actions"], ' +
-    'button[aria-label*="その他の操作"], ' +
-    '.ytp-menu-button' // プレイヤー内のメニューボタンも候補に
-  );
-
-  if (menuButtons.length > 0) {
+  const menuBtn = findPlaylistMenuButton();
+  if (menuBtn) {
     console.log('[後で見る切り替え] メニューボタンをクリック');
-    let clicked = false;
-    for (const btn of menuButtons) {
-      if (btn.offsetWidth > 0) {
-        btn.click();
-        clicked = true;
-        break;
-      }
-    }
-    if (!clicked && menuButtons.length > 0) menuButtons[0].click();
+    menuBtn.click();
 
-    waitForElement('ytd-menu-service-item-renderer, tp-yt-paper-item, ytd-menu-navigation-item-renderer', {
-      timeout: 2000,
+    waitForElement('ytd-menu-service-item-renderer, tp-yt-paper-item, ytd-menu-navigation-item-renderer, yt-list-item-view-model', {
+      timeout: 3000,
       contentCheck: (el) => {
         const t = (el.textContent || el.getAttribute('aria-label') || '').toLowerCase();
         return t.includes('保存') || t.includes('save') || (t.includes('watch') && t.includes('later'));
@@ -1884,6 +2207,11 @@ function toggleWatchLater() {
       console.log('[後で見る切り替え] メニュー内の保存項目をクリック');
       item.click();
       handlePlaylistDialog('toggle');
+      const panel = document.getElementById(PANEL_ID);
+      if (panel) {
+        schedulePanelResync(panel, [300, 800, 1600, 2500]);
+        scheduleFullReembed(panel);
+      }
     })
     .catch(() => console.log('[後で見る切り替え] メニュー内に保存項目が見つかりません'));
   } else {
@@ -1960,7 +2288,10 @@ function createPlaylistPanel() {
   panel.id = 'youtube-unwatched-opener-playlist-panel';
   panel.innerHTML = `
     <div class="panel-header">
-      <h3>プレイリストに保存</h3>
+      <div class="panel-header-titles">
+        <h3>プレイリストに保存</h3>
+        <span id="playlist-panel-watchlater-status" class="watchlater-status"></span>
+      </div>
       <button id="toggle-playlist-panel" aria-label="プレイリストパネルを閉じる">×</button>
     </div>
     <div class="panel-content">
@@ -1989,19 +2320,63 @@ function createPlaylistPanel() {
   embedPlaylistDialog(panel);
 }
 
-async function embedPlaylistDialog(panel) {
-  teardownPlaylistPanel(panel);
+async function embedPlaylistDialog(panel, options = {}) {
+  if (panel._isEmbedding) return;
+  panel._isEmbedding = true;
 
   const container = panel.querySelector('.playlist-dialog-container');
-  container.innerHTML = '<div class="loading">プレイリストを読み込み中...</div>';
+
+  // === [DEBUG] container の変化を全て記録 ===
+  const debugTag = `[DEBUG container@${Date.now()}]`;
+  const snapshot = (label) => {
+    const fc = container.firstElementChild;
+    console.log(`${debugTag} ${label} | children=${container.children.length} | firstChild=${fc ? fc.tagName + (fc.className ? '.' + fc.className : '') : 'null'} | innerHTML.length=${container.innerHTML.length}`);
+  };
+  snapshot('embedPlaylistDialog 入口');
+  if (panel._debugObserver) panel._debugObserver.disconnect();
+  const debugObserver = new MutationObserver((muts) => {
+    for (const m of muts) {
+      const removedTags = Array.from(m.removedNodes).map(n => n.nodeType === 1 ? n.tagName + (n.className ? '.' + n.className : '') : `#text(${(n.textContent || '').slice(0, 20)})`);
+      const addedTags = Array.from(m.addedNodes).map(n => n.nodeType === 1 ? n.tagName + (n.className ? '.' + n.className : '') : `#text(${(n.textContent || '').slice(0, 20)})`);
+      console.log(`${debugTag} mutation type=${m.type} target=${m.target.tagName || m.target.nodeName}`);
+      if (removedTags.length) console.log(`${debugTag}   removed: [${removedTags.join(', ')}]`);
+      if (addedTags.length) console.log(`${debugTag}   added: [${addedTags.join(', ')}]`);
+      console.log(`${debugTag}   stack:`, new Error().stack.split('\n').slice(2, 7).join('\n'));
+    }
+  });
+  debugObserver.observe(container, { childList: true, subtree: false });
+  panel._debugObserver = debugObserver;
+  // === [DEBUG] ここまで ===
+
+  console.log(`${debugTag} teardownPlaylistPanel 呼び出し前`);
+  teardownPlaylistPanel(panel);
+  snapshot('teardownPlaylistPanel 後');
+
+  // keepCurrentContent: 既に埋め込み済みのクローンを残したまま、新しいダイアログ取得後に
+  // mountDialogClone で原子的に差し替える（r キー後の再 embed で空状態を見せないため）。
+  // 直下の最初の子要素が loading/error 用の div でないならクローンが mount 済みとみなす。
+  const firstChild = container.firstElementChild;
+  const hasMountedClone = !!firstChild
+    && !firstChild.classList.contains('loading')
+    && !firstChild.classList.contains('error-message');
+  const keepCurrent = !!options.keepCurrentContent && hasMountedClone;
+  console.log(`${debugTag} keepCurrent判定: options.keepCurrentContent=${!!options.keepCurrentContent}, hasMountedClone=${hasMountedClone}, firstChild=${firstChild ? firstChild.tagName + '.' + firstChild.className : 'null'}, classList=[${firstChild ? Array.from(firstChild.classList).join(',') : ''}]`);
+  if (!keepCurrent) {
+    console.log(`${debugTag} loading に置き換えます`);
+    container.innerHTML = '<div class="loading">プレイリストを読み込み中...</div>';
+  } else {
+    console.log(`${debugTag} keepCurrent=true: 既存クローンを維持`);
+  }
 
   // バックグラウンドタブでは処理をスキップ
   if (document.visibilityState === 'hidden') {
-    container.innerHTML = '<div class="loading">タブがアクティブになったらプレイリストが読み込まれます</div>';
+    if (!keepCurrent) {
+      container.innerHTML = '<div class="loading">タブがアクティブになったらプレイリストが読み込まれます</div>';
+    }
     document.addEventListener('visibilitychange', function onVisible() {
       if (document.visibilityState === 'visible') {
         document.removeEventListener('visibilitychange', onVisible);
-        setTimeout(() => embedPlaylistDialog(panel), 1000);
+        setTimeout(() => embedPlaylistDialog(panel, options), 1000);
       }
     });
     return;
@@ -2010,8 +2385,13 @@ async function embedPlaylistDialog(panel) {
   console.log('[INFO] プレイリストパネル: ダイアログ埋め込み処理を開始');
 
   try {
+    console.log(`${debugTag} findAndClickSaveButton 呼び出し前`);
+    snapshot('findAndClickSaveButton 直前');
     const originalDialog = await findAndClickSaveButton();
+    console.log(`${debugTag} findAndClickSaveButton 完了, originalDialog=${originalDialog && originalDialog.tagName}`);
+    snapshot('findAndClickSaveButton 直後');
     mountDialogClone(panel, originalDialog);
+    snapshot('mountDialogClone 直後');
   } catch (err) {
     console.log('[ERROR] プレイリストパネル:', err.message);
     [...PLAYLIST_DIALOG_SELECTORS, 'ytd-popup-container', 'tp-yt-paper-dialog', 'yt-sheet-vm'].forEach(sel => {
@@ -2025,7 +2405,31 @@ async function embedPlaylistDialog(panel) {
         })));
       }
     });
-    showPanelError(panel, 'プレイリストダイアログが見つかりませんでした<br><small>保存ボタンをクリックするか、再試行してください</small>');
+    console.log(`${debugTag} catch 分岐: err=${err && err.message}`);
+    snapshot('catch 内');
+
+    // 前回のクローズ時にダイアログへ残留したインラインスタイル（max-height 等）が
+    // 原因でサイズ0のまま開けないことがある。対象候補の style を除去したうえで
+    // 1 回だけ自動的に再試行する（動画を連続で切り替えた場合に発生しやすい）。
+    const retryCount = options.retryCount || 0;
+    if (retryCount < 1) {
+      console.log(`${debugTag} 自動再試行のため対象要素の style を除去`);
+      for (const sel of PLAYLIST_DIALOG_SELECTORS) {
+        document.querySelectorAll(sel).forEach(el => {
+          if (!panel.contains(el)) el.removeAttribute('style');
+        });
+      }
+      panel._isEmbedding = false;
+      setTimeout(() => embedPlaylistDialog(panel, { ...options, retryCount: retryCount + 1 }), 500);
+      return;
+    }
+
+    // keepCurrent 時は既存クローンを残してエラーを上書きしない
+    if (!keepCurrent) {
+      showPanelError(panel, 'プレイリストダイアログが見つかりませんでした<br><small>保存ボタンをクリックするか、再試行してください</small>');
+    }
+  } finally {
+    panel._isEmbedding = false;
   }
 }
 
@@ -2162,6 +2566,8 @@ function interceptShortsLinks() {
 browserAPI.storage.sync.get(DEFAULT_SETTINGS).then((result) => {
   settings = result;
   initializeHighlighting();
+  initializePersistentSeekBar();
+  initializeRelatedVideosBlocker();
   interceptShortsLinks();
   initializeShortsRedirect();
 
@@ -2235,6 +2641,22 @@ function updatePlaylistPanelForNewVideo() {
   }
 }
 
+// SPA遷移（登録チャンネルページへの出入り）を検知したときのハイライト状態リセット
+// 遷移前ページで判定・キャッシュされた未視聴/視聴済み状態が、DOM要素の使い回しにより
+// 遷移後のページにそのまま残ってしまうのを防ぐため、URL変更のたびにキャッシュを破棄し、
+// 登録チャンネルページであれば監視オブザーバーを（再）起動して再判定させる
+function handleUrlChangeForHighlighting() {
+  resetSimpleHighlightCache();
+
+  if (isSubscriptionsFeedPage()) {
+    startSimpleHighlightObserver();
+    updateHighlighting();
+  } else if (simpleHighlightObserver) {
+    simpleHighlightObserver.disconnect();
+    removeVideoCountOverlay();
+  }
+}
+
 // デバウンス機能付きMutationObserver
 let observerTimeout = null;
 let lastObserverRun = 0;
@@ -2298,6 +2720,7 @@ observer.observe(document.body, {
 window.addEventListener('popstate', updatePlaylistPanelForNewVideo);
 window.addEventListener('pushstate', updatePlaylistPanelForNewVideo);
 window.addEventListener('replacestate', updatePlaylistPanelForNewVideo);
+window.addEventListener('popstate', () => setTimeout(handleUrlChangeForHighlighting, 300));
 
 // Toast通知機能
 const toastController = {
@@ -2412,12 +2835,14 @@ history.pushState = function() {
   originalPushState.apply(history, arguments);
   setTimeout(recordVideoWatchHistory, 50);
   setTimeout(updatePlaylistPanelForNewVideo, 100);
+  setTimeout(handleUrlChangeForHighlighting, 300);
 };
 
 history.replaceState = function() {
   originalReplaceState.apply(history, arguments);
   setTimeout(recordVideoWatchHistory, 50);
   setTimeout(updatePlaylistPanelForNewVideo, 100);
+  setTimeout(handleUrlChangeForHighlighting, 300);
 };
 
 // プレイリストパネル表示前のフォーカス保存用
@@ -2481,8 +2906,8 @@ function applySimpleHighlighting() {
     return;
   }
 
-  // 登録チャンネルページでのみ動作
-  if (window.location.pathname !== '/feed/subscriptions') {
+  // 登録チャンネルページ（ショートフィード含む）でのみ動作
+  if (!isSubscriptionsFeedPage()) {
     removeVideoCountOverlay();
     return;
   }
@@ -2622,15 +3047,25 @@ function getSimpleVideoStatus(videoElement) {
   // ショート動画のチェック（書き換え前と書き換え後の両方に対応）
   const shortsLink = videoElement.querySelector('a[href*="/shorts/"]');
   const convertedShortsLink = videoElement.querySelector('a[data-converted="true"]');
-  
-  if (shortsLink || convertedShortsLink) {
+  // /feed/subscriptions/shorts ページは全項目がショート動画だが、
+  // リンク自体は最初から /watch?v= 形式（/shorts/ を含まない）のため
+  // 上記2つの判定に掛からない。ページ自体で判定する。
+  const isSubscriptionsShortsFeed = window.location.pathname.startsWith('/feed/subscriptions/shorts');
+  const subscriptionsShortsLink = isSubscriptionsShortsFeed
+    ? videoElement.querySelector('a[href*="/watch?v="]')
+    : null;
+
+  if (shortsLink || convertedShortsLink || subscriptionsShortsLink) {
     // 視聴履歴でショート動画の視聴状態を判定
     let videoUrl;
-    
+
     if (shortsLink) {
       // 書き換え前のショートURL
       videoUrl = shortsLink.href;
       debugLogController.log(`[ショート判定] 書き換え前URL検出: ${videoUrl}`);
+    } else if (subscriptionsShortsLink) {
+      videoUrl = subscriptionsShortsLink.href;
+      debugLogController.log(`[ショート判定] 登録チャンネルショートフィードURL検出: ${videoUrl}`);
     } else if (convertedShortsLink) {
       // 書き換え後の通常URL（元はショート動画）
       videoUrl = convertedShortsLink.href;
@@ -2891,20 +3326,29 @@ function applySimpleVideoStyle(videoElement, status) {
 // ページ変更を監視して再実行
 let simpleHighlightObserver = null;
 
+// ハイライト判定の処理済みキャッシュを破棄する
+// SPA遷移でytd-rich-item-renderer要素が使い回されるケースに対応するため、
+// ページ遷移時にも明示的に呼び出す
+function resetSimpleHighlightCache() {
+  const videoElements = document.querySelectorAll('#contents ytd-rich-item-renderer');
+  videoElements.forEach(el => {
+    delete el.dataset.simpleHighlightProcessed;
+    delete el.dataset.videoStatus;
+  });
+}
+
 function startSimpleHighlightObserver() {
   if (simpleHighlightObserver) {
     simpleHighlightObserver.disconnect();
   }
   
   simpleHighlightObserver = new MutationObserver(() => {
-    // 新しい動画要素が追加されたときに処理済みフラグをリセット
-    const videoElements = document.querySelectorAll('#contents ytd-rich-item-renderer');
-    videoElements.forEach(el => {
-      if (!el.dataset.simpleHighlightProcessed) {
-        delete el.dataset.simpleHighlightProcessed;
-      }
-    });
-    
+    // DOM変化時（YouTube側が視聴状態バッジ等を更新した可能性がある）は
+    // 処理済みキャッシュを破棄し、次回のapplySimpleHighlightingで再判定させる。
+    // SPA遷移でytd-rich-item-renderer要素が使い回された場合、古いキャッシュが
+    // 残ったままだと視聴済みになった動画が未視聴のまま扱われ続けるため。
+    resetSimpleHighlightCache();
+
     // 500ms後にハイライト処理を実行（連続実行を防ぐ）
     clearTimeout(window.simpleHighlightTimeout);
     window.simpleHighlightTimeout = setTimeout(applySimpleHighlighting, 500);
@@ -2920,7 +3364,7 @@ function startSimpleHighlightObserver() {
 }
 
 // 初期化時にオブザーバーを開始
-if (window.location.pathname === '/feed/subscriptions') {
+if (isSubscriptionsFeedPage()) {
   startSimpleHighlightObserver();
 }
 

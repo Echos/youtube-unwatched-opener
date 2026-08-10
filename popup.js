@@ -8,7 +8,8 @@ const DEFAULT_SETTINGS = {
   showPlaylistPanel: true,
   debugMode: false,
   historyMaxCount: 10000,
-  includeShorts: true
+  includeShorts: true,
+  hideRelatedVideos: true
 };
 
 // ========== DOM 参照 ==========
@@ -22,6 +23,7 @@ const el = {
   debugMode:             document.getElementById('debugMode'),
   historyMaxCount:       document.getElementById('historyMaxCount'),
   includeShorts:         document.getElementById('includeShorts'),
+  hideRelatedVideos:     document.getElementById('hideRelatedVideos'),
   statusDot:             document.getElementById('status-dot'),
   status:                document.getElementById('status'),
   toggleLabel:           document.getElementById('toggle-label'),
@@ -54,7 +56,8 @@ function getSettingsFromDOM() {
     showPlaylistPanel:     el.showPlaylistPanel.checked,
     debugMode:             el.debugMode.checked,
     historyMaxCount:       parseInt(el.historyMaxCount.value),
-    includeShorts:         el.includeShorts.checked
+    includeShorts:         el.includeShorts.checked,
+    hideRelatedVideos:     el.hideRelatedVideos.checked
   };
 }
 
@@ -85,6 +88,7 @@ function loadSettings() {
     el.debugMode.checked             = settings.debugMode;
     el.historyMaxCount.value         = settings.historyMaxCount;
     el.includeShorts.checked         = settings.includeShorts;
+    el.hideRelatedVideos.checked     = settings.hideRelatedVideos;
 
     el.toggleLabel.textContent = settings.enabled ? 'ON' : 'OFF';
 
@@ -132,7 +136,7 @@ el.enabled.addEventListener('change', () => {
 // ========== イベント: その他のトグル・セレクト ==========
 [
   el.shortcutKey, el.highlightEnabled, el.watchLaterKey,
-  el.showPlaylistPanel, el.debugMode, el.includeShorts
+  el.showPlaylistPanel, el.debugMode, el.includeShorts, el.hideRelatedVideos
 ].forEach(input => input.addEventListener('change', saveSettings));
 
 // ========== イベント: 数値入力 ==========
