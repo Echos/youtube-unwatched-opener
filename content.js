@@ -2831,25 +2831,31 @@ function recordVideoWatchHistory() {
 // 1440pがあれば1440pを、なければ1080pを優先的に使用する（4K等への過剰な上振れは避ける）
 const PREFERRED_QUALITY_ORDER = ['hd1440', 'hd1080'];
 
+// 戻り値: 'pending'（プレイヤー未準備・画質リスト未取得・設定コマンド発行直後で再確認が必要）
+//         'confirmed'（目標画質が実際に反映済み）
+//         'not-applicable'（1080p/1440pがそもそも利用不可）
 function applyPreferredVideoQuality() {
   const player = document.getElementById('movie_player');
   if (!player || typeof player.getAvailableQualityLevels !== 'function') {
-    return false; // プレイヤー未準備のためリトライ対象
+    return 'pending';
   }
 
   const availableLevels = player.getAvailableQualityLevels();
   if (!availableLevels || availableLevels.length === 0) {
-    return false; // 画質リスト未取得のためリトライ対象
+    return 'pending';
   }
 
   const targetQuality = PREFERRED_QUALITY_ORDER.find(quality => availableLevels.includes(quality));
   if (!targetQuality) {
     debugLogController.log(`[画質設定] 1080p/1440pが利用不可のためスキップ (利用可能: ${availableLevels.join(', ')})`);
-    return true; // 判定完了（対象外の動画のため何もしない）
+    return 'not-applicable';
   }
 
-  if (typeof player.getPlaybackQuality === 'function' && player.getPlaybackQuality() === targetQuality) {
-    return true; // 既に目標画質のため完了
+  const currentQuality = typeof player.getPlaybackQuality === 'function' ? player.getPlaybackQuality() : null;
+  debugLogController.log(`[画質設定] 現在: ${currentQuality}, 目標: ${targetQuality}, 利用可能: ${availableLevels.join(', ')}`);
+
+  if (currentQuality === targetQuality) {
+    return 'confirmed';
   }
 
   if (typeof player.setPlaybackQualityRange === 'function') {
@@ -2857,22 +2863,22 @@ function applyPreferredVideoQuality() {
   }
   if (typeof player.setPlaybackQuality === 'function') {
     player.setPlaybackQuality(targetQuality);
-    debugLogController.log(`[画質設定] 画質を${targetQuality}に設定しました`);
+    debugLogController.log(`[画質設定] 画質を${targetQuality}に設定要求しました`);
   }
 
-  return true;
+  return 'pending';
 }
 
-// YouTubeは動画開始直後に画質をautoへ戻すことがあるため、
-// 数回リトライしつつ再生開始イベントでも再適用する
+// YouTube側の画質反映は非同期（数秒かかる）かつ動画開始直後にautoへ戻されることが
+// あるため、実際に目標画質へ切り替わったことを確認できるまで一定時間ポーリングする
 function enforcePreferredVideoQuality() {
   let attempts = 0;
-  const maxAttempts = 10;
+  const maxAttempts = 20; // 500ms間隔で最大10秒間確認・再適用
 
   const timer = setInterval(() => {
     attempts++;
-    const done = applyPreferredVideoQuality();
-    if (done || attempts >= maxAttempts) {
+    const result = applyPreferredVideoQuality();
+    if (result === 'confirmed' || result === 'not-applicable' || attempts >= maxAttempts) {
       clearInterval(timer);
     }
   }, 500);
@@ -2887,7 +2893,7 @@ function attachPreferredQualityStateListener(player) {
   if (typeof player.addEventListener === 'function') {
     player.addEventListener('onStateChange', (state) => {
       if (state === 1) { // 1 = playing
-        applyPreferredVideoQuality();
+        enforcePreferredVideoQuality();
       }
     });
   }
