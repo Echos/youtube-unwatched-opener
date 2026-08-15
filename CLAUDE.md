@@ -25,6 +25,7 @@ YouTube登録チャンネルページ（https://www.youtube.com/feed/subscriptio
 - 「r」キーで後で見るプレイリストの追加/削除
 - 右サイドバーにプレイリストパネル表示
 - ショート動画の通常動画プレイヤーでの再生
+- 動画再生時に1440p（あれば）／1080pを優先的に自動選択（4K等への過剰な上振れは避ける）
 
 ## 技術仕様
 
@@ -140,6 +141,15 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
 - 最小権限の原則（activeTab・storage・tabs のみ）
 
 ## 更新履歴
+
+### 2026-08-15: 動画再生画質の優先設定機能を追加
+- **機能追加**: 動画ページ（`/watch`）でプレイヤーの利用可能画質に`hd1440`（1440p）があればそれを、なければ`hd1080`（1080p）を自動的に優先選択するよう変更。4K等それ以上の画質には自動で上げない（通信量とのバランスを考慮）
+- **実装内容**:
+  - `applyPreferredVideoQuality()`: `#movie_player` の `getAvailableQualityLevels()` で利用可能画質を取得し、`hd1440` → `hd1080` の優先順で最初に一致したものを `setPlaybackQualityRange()` / `setPlaybackQuality()` で適用
+  - `enforcePreferredVideoQuality()`: YouTube側が動画開始直後に画質をautoへ戻すことがあるため、500ms間隔・最大10回までリトライして確実に適用
+  - `attachPreferredQualityStateListener()`: プレイヤーの `onStateChange` イベント（再生開始 = state 1）でも再適用し、動画切り替え後の画質リセットに対応
+  - `setupPreferredVideoQuality()`: `initializeVideoPageFeatures()` および `history.pushState`/`replaceState` フック内から呼び出し、SPA遷移で動画が切り替わるたびに再適用
+- **検証**: 実際のYouTube動画ページのコンソールで `movie_player` の `getAvailableQualityLevels()` / `setPlaybackQuality()` / `onStateChange` イベントの挙動を直接確認し、画質切り替えが数秒後に反映されること（即時反映ではないため実装側でリトライが必要なこと）を確認済み
 
 ### 2026-08-10: SPA遷移時のハイライトキャッシュ不整合を修正
 - **不具合**: 動画ページ／ショートページなど別のYouTubeページから登録チャンネルページ（`/feed/subscriptions`）に戻ると、遷移前にキャッシュされた未視聴／視聴済みステータスがそのまま残り、実際には視聴済みになった動画が未視聴として扱われ続ける問題を修正

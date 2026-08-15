@@ -2827,6 +2827,83 @@ function recordVideoWatchHistory() {
   }, 5000); // 5秒後に履歴に追加（実際の視聴開始と判定）
 }
 
+// 動画プレイヤーの優先画質設定機能
+// 1440pがあれば1440pを、なければ1080pを優先的に使用する（4K等への過剰な上振れは避ける）
+const PREFERRED_QUALITY_ORDER = ['hd1440', 'hd1080'];
+
+function applyPreferredVideoQuality() {
+  const player = document.getElementById('movie_player');
+  if (!player || typeof player.getAvailableQualityLevels !== 'function') {
+    return false; // プレイヤー未準備のためリトライ対象
+  }
+
+  const availableLevels = player.getAvailableQualityLevels();
+  if (!availableLevels || availableLevels.length === 0) {
+    return false; // 画質リスト未取得のためリトライ対象
+  }
+
+  const targetQuality = PREFERRED_QUALITY_ORDER.find(quality => availableLevels.includes(quality));
+  if (!targetQuality) {
+    debugLogController.log(`[画質設定] 1080p/1440pが利用不可のためスキップ (利用可能: ${availableLevels.join(', ')})`);
+    return true; // 判定完了（対象外の動画のため何もしない）
+  }
+
+  if (typeof player.getPlaybackQuality === 'function' && player.getPlaybackQuality() === targetQuality) {
+    return true; // 既に目標画質のため完了
+  }
+
+  if (typeof player.setPlaybackQualityRange === 'function') {
+    player.setPlaybackQualityRange(targetQuality, targetQuality);
+  }
+  if (typeof player.setPlaybackQuality === 'function') {
+    player.setPlaybackQuality(targetQuality);
+    debugLogController.log(`[画質設定] 画質を${targetQuality}に設定しました`);
+  }
+
+  return true;
+}
+
+// YouTubeは動画開始直後に画質をautoへ戻すことがあるため、
+// 数回リトライしつつ再生開始イベントでも再適用する
+function enforcePreferredVideoQuality() {
+  let attempts = 0;
+  const maxAttempts = 10;
+
+  const timer = setInterval(() => {
+    attempts++;
+    const done = applyPreferredVideoQuality();
+    if (done || attempts >= maxAttempts) {
+      clearInterval(timer);
+    }
+  }, 500);
+}
+
+function attachPreferredQualityStateListener(player) {
+  if (!player || player.dataset.yuoQualityListenerAttached) {
+    return;
+  }
+  player.dataset.yuoQualityListenerAttached = 'true';
+
+  if (typeof player.addEventListener === 'function') {
+    player.addEventListener('onStateChange', (state) => {
+      if (state === 1) { // 1 = playing
+        applyPreferredVideoQuality();
+      }
+    });
+  }
+}
+
+function setupPreferredVideoQuality() {
+  waitForElement('#movie_player', { timeout: 8000 })
+    .then(player => {
+      attachPreferredQualityStateListener(player);
+      enforcePreferredVideoQuality();
+    })
+    .catch(() => {
+      debugLogController.log('[画質設定] movie_player要素が見つかりませんでした');
+    });
+}
+
 // 履歴API操作をフック
 const originalPushState = history.pushState;
 const originalReplaceState = history.replaceState;
@@ -2836,6 +2913,7 @@ history.pushState = function() {
   setTimeout(recordVideoWatchHistory, 50);
   setTimeout(updatePlaylistPanelForNewVideo, 100);
   setTimeout(handleUrlChangeForHighlighting, 300);
+  setTimeout(setupPreferredVideoQuality, 100);
 };
 
 history.replaceState = function() {
@@ -2843,6 +2921,7 @@ history.replaceState = function() {
   setTimeout(recordVideoWatchHistory, 50);
   setTimeout(updatePlaylistPanelForNewVideo, 100);
   setTimeout(handleUrlChangeForHighlighting, 300);
+  setTimeout(setupPreferredVideoQuality, 100);
 };
 
 // プレイリストパネル表示前のフォーカス保存用
@@ -2853,6 +2932,7 @@ function initializeVideoPageFeatures() {
   if ((window.location.pathname.startsWith('/watch') || window.location.pathname.startsWith('/shorts')) &&
       window.location.pathname !== '/') {
     createPlaylistPanel();
+    setupPreferredVideoQuality();
   }
 }
 
