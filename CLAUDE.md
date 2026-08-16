@@ -34,6 +34,7 @@ YouTube登録チャンネルページ（https://www.youtube.com/feed/subscriptio
 youtube-unwatched-opener/
 ├── manifest.json        # 拡張機能設定（Manifest V3、Chrome/Firefox両対応）
 ├── browser-polyfill.js  # Chrome/Firefox API抽象化レイヤー
+├── quality-preference.js # 優先画質設定（document_startで実行、localStorage直接操作）
 ├── content.js           # メインロジック（未視聴動画検出、ハイライト、ショート動画変換）
 ├── background.js        # バックグラウンド処理（タブ作成）
 ├── popup.html           # 設定画面HTML
@@ -141,6 +142,13 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
 - 最小権限の原則（activeTab・storage・tabs のみ）
 
 ## 更新履歴
+
+### 2026-08-15: 優先画質設定をlocalStorage直接操作方式に全面刷新
+- **背景**: ポーリング＋`setPlaybackQuality()`方式（直前の修正）を適用しても、実際には1080p/1440pが優先利用されないという報告が継続。プレイヤーAPI経由の画質制御はYouTube側の実装変更の影響を受けやすく信頼性に欠けると判断し、類似事例（GreasyFork等の画質固定系ユーザースクリプトで広く使われている手法）を調査した上で設計を全面的に見直した
+- **調査で判明した事実**: YouTubeは`localStorage`の`yt-player-quality`キー（形式: `{"data":"{\"quality\":<数値>,\"previousQuality\":<数値>}","expiration":<epoch ms>,"creation":<epoch ms>}`）に「ユーザーが設定画面から手動選択した画質」を保存しており、動画プレイヤー初期化時にこの値を読んで開始画質を決定する。実機の設定メニューから実際に画質を変更してlocalStorageの差分を観測することでこの形式を特定した
+- **新実装**: `quality-preference.js`を`document_start`で新規注入し、`quality: 1440`を常に書き込む。YouTube側が「保存された画質が動画の利用可能範囲を超える場合は範囲内の最高画質にクランプする」という挙動を持つため、1440p非対応の動画では自動的に1080p等へ収まる（＝「1440pがあれば1440p、なければ1080p」を1回の書き込みだけで実現）。SPA内の動画切り替え（`history.pushState`)ではdocument_startが再実行されないため、YouTube自身が発火する`yt-navigate-start`イベントでも同じ処理を再実行する
+- **検証**: 実際のYouTube上で (1) 4K対応動画への遷移時に`yt-player-quality`をこの形式で書き込むと即座に`hd1440`で再生開始、(2) 1080p止まりの動画では自動的に`hd1080`にクランプ、(3) 240p程度しかない動画では`small`（利用可能な最高画質）に収まりエラーにならない、(4) 実際にSPA内で関連動画リンクをクリックして遷移した場合も`yt-navigate-start`ハンドラだけで追加のポーリングなしに正しい画質で開始される、の4パターンをそれぞれ実機ブラウザで確認済み
+- **既存のポーリング方式は保持**: `content.js`側の`enforcePreferredVideoQuality()`等はセーフティネットとしてそのまま残し、二重の担保とした
 
 ### 2026-08-15: 優先画質設定が反映されない不具合を修正
 - **不具合**: 「1080p(あれば1440p)を優先的に利用する」機能を実装したが、実際には画質が優先設定通りに切り替わらないケースがあった
