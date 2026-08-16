@@ -45,7 +45,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["highlight.css"],
+      "resources": ["highlight.css", "quality-enforcer.js"],
       "matches": ["https://www.youtube.com/*"]
     }
   ]

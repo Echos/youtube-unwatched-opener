@@ -35,6 +35,7 @@ youtube-unwatched-opener/
 ├── manifest.json        # 拡張機能設定（Manifest V3、Chrome/Firefox両対応）
 ├── browser-polyfill.js  # Chrome/Firefox API抽象化レイヤー
 ├── quality-preference.js # 優先画質設定（document_startで実行、localStorage直接操作）
+├── quality-enforcer.js  # 優先画質設定のセーフティネット（<script>注入でメインワールド実行）
 ├── content.js           # メインロジック（未視聴動画検出、ハイライト、ショート動画変換）
 ├── background.js        # バックグラウンド処理（タブ作成）
 ├── popup.html           # 設定画面HTML
@@ -142,6 +143,14 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
 - 最小権限の原則（activeTab・storage・tabs のみ）
 
 ## 更新履歴
+
+### 2026-08-15: content.js側の画質ポーリングが「隔離ワールド」制約で無効化されていた不具合を修正
+- **不具合**: localStorage方式（`quality-preference.js`）を導入した後も、実際のChrome（拡張機能導入・最新化済み環境、Claude in Chromeで検証）では1080p/1440pが優先利用されないケースが残っていた
+- **調査**: Claude in Chromeで実機検証したところ、デバッグモードが有効で他の`[DEBUG]`ログは大量に出力されているにもかかわらず、content.js内の画質関連ログ（`[画質設定] 現在: ...`）が一度も出力されていないことを発見。これは`applyPreferredVideoQuality()`が実質的に一度も実行されていないことを意味する
+- **根本原因**: `#movie_player`の`getAvailableQualityLevels`/`setPlaybackQuality`/`onStateChange`等はYouTube本体のページスクリプトが**メインワールド**でDOM要素に直接生やした自前プロパティ（`Object.getOwnPropertyNames`で確認、`hasOwnProperty`は`true`）。content.jsはChrome拡張機能の**隔離ワールド（isolated world）**で実行されるため、DOM構造自体は共有されていてもページスクリプトが後付けしたJSプロパティ・メソッドは参照できず、常に`typeof player.getAvailableQualityLevels !== 'function'`側の早期returnに落ちて何も起きないまま終わっていた（かつ当時はこの分岐にログ出力がなく気づきにくかった）
+- **修正内容**: content.js内にあったポーリング関数（`applyPreferredVideoQuality`/`enforcePreferredVideoQuality`/`attachPreferredQualityStateListener`/`setupPreferredVideoQuality`）を全て削除し、同等のロジックを`quality-enforcer.js`として切り出した上で、content.jsから`<script src="chrome-extension://.../quality-enforcer.js">`をページに注入してメインワールドで実行させる方式に変更（`injectQualityEnforcerScript()`、`web_accessible_resources`に追加）。YouTube自身が発火する`yt-navigate-start`イベントでSPA遷移のたびに再適用する
+- **検証**: Claude in Chromeの実機環境で、(1) `player.getOwnPropertyNames`から画質関連メソッドが自前プロパティであることを確認、(2) メインワールド相当の実行コンテキストからは同一ロジックが確実に動作することを複数回確認、(3) `quality-preference.js`（localStorage方式）は実機で既に正常動作していることも別途確認。なお`textContent`によるインラインスクリプト注入はYouTubeのTrusted Types CSPでブロックされることも確認しており、`script.src`（web_accessible_resources経由）を使う現在の実装が正しいアプローチであることの裏付けとなった
+- **教訓**: DOM要素に対する`typeof element.method === 'function'`チェックだけでは「メソッドが存在しない」と「隔離ワールドから見えない」を区別できず、静的なコード確認や単純な動作確認だけでは見つけにくい。今後YouTubeの内部プレイヤーAPI（`#movie_player`のカスタムメソッド群）を直接操作するコードは、content.js（隔離ワールド）ではなく必ずメインワールドに注入したスクリプトから実行すること
 
 ### 2026-08-15: 優先画質設定をlocalStorage直接操作方式に全面刷新
 - **背景**: ポーリング＋`setPlaybackQuality()`方式（直前の修正）を適用しても、実際には1080p/1440pが優先利用されないという報告が継続。プレイヤーAPI経由の画質制御はYouTube側の実装変更の影響を受けやすく信頼性に欠けると判断し、類似事例（GreasyFork等の画質固定系ユーザースクリプトで広く使われている手法）を調査した上で設計を全面的に見直した

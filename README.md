@@ -85,6 +85,7 @@ youtube-unwatched-opener/
 ├── manifest.json        # 拡張機能の設定（Chrome/Firefox両対応）
 ├── browser-polyfill.js  # Chrome/Firefox API抽象化レイヤー
 ├── quality-preference.js # 優先画質設定（document_start実行）
+├── quality-enforcer.js  # 優先画質設定のセーフティネット（メインワールド実行）
 ├── content.js           # メインロジック
 ├── background.js        # バックグラウンド処理
 ├── popup.html           # 設定画面HTML
@@ -153,6 +154,9 @@ YouTubeUnwatchedOpener.findUnwatched()
 MIT License
 
 ## 更新履歴
+
+### v2.1.2 (2026-08-15)
+- **画質自動優先設定のセーフティネットを修正**: content.js側のポーリング処理が、Chrome拡張機能の「隔離ワールド」制約によりYouTubeプレイヤーの内部APIへ一切アクセスできず無効化されていた不具合を修正。同等ロジックをページのメインワールドへ注入して実行する方式に変更
 
 ### v2.1.1 (2026-08-15)
 - **画質自動優先設定の信頼性を改善**: YouTubeが画質の記憶に使うlocalStorageキーへ直接書き込む方式に変更し、1440p対応動画では即座に1440p、非対応動画では1080p等へ自動的にクランプされるようにした

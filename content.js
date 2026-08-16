@@ -2570,6 +2570,7 @@ browserAPI.storage.sync.get(DEFAULT_SETTINGS).then((result) => {
   initializeRelatedVideosBlocker();
   interceptShortsLinks();
   initializeShortsRedirect();
+  injectQualityEnforcerScript();
 
   // #secondary要素の出現を待って即時初期化（最大4秒、タイムアウト時はそのまま実行）
   waitForElement('#secondary', { timeout: 4000 })
@@ -2827,87 +2828,23 @@ function recordVideoWatchHistory() {
   }, 5000); // 5秒後に履歴に追加（実際の視聴開始と判定）
 }
 
-// 動画プレイヤーの優先画質設定機能
-// 1440pがあれば1440pを、なければ1080pを優先的に使用する（4K等への過剰な上振れは避ける）
-const PREFERRED_QUALITY_ORDER = ['hd1440', 'hd1080'];
-
-// 戻り値: 'pending'（プレイヤー未準備・画質リスト未取得・設定コマンド発行直後で再確認が必要）
-//         'confirmed'（目標画質が実際に反映済み）
-//         'not-applicable'（1080p/1440pがそもそも利用不可）
-function applyPreferredVideoQuality() {
-  const player = document.getElementById('movie_player');
-  if (!player || typeof player.getAvailableQualityLevels !== 'function') {
-    return 'pending';
-  }
-
-  const availableLevels = player.getAvailableQualityLevels();
-  if (!availableLevels || availableLevels.length === 0) {
-    return 'pending';
-  }
-
-  const targetQuality = PREFERRED_QUALITY_ORDER.find(quality => availableLevels.includes(quality));
-  if (!targetQuality) {
-    debugLogController.log(`[画質設定] 1080p/1440pが利用不可のためスキップ (利用可能: ${availableLevels.join(', ')})`);
-    return 'not-applicable';
-  }
-
-  const currentQuality = typeof player.getPlaybackQuality === 'function' ? player.getPlaybackQuality() : null;
-  debugLogController.log(`[画質設定] 現在: ${currentQuality}, 目標: ${targetQuality}, 利用可能: ${availableLevels.join(', ')}`);
-
-  if (currentQuality === targetQuality) {
-    return 'confirmed';
-  }
-
-  if (typeof player.setPlaybackQualityRange === 'function') {
-    player.setPlaybackQualityRange(targetQuality, targetQuality);
-  }
-  if (typeof player.setPlaybackQuality === 'function') {
-    player.setPlaybackQuality(targetQuality);
-    debugLogController.log(`[画質設定] 画質を${targetQuality}に設定要求しました`);
-  }
-
-  return 'pending';
-}
-
-// YouTube側の画質反映は非同期（数秒かかる）かつ動画開始直後にautoへ戻されることが
-// あるため、実際に目標画質へ切り替わったことを確認できるまで一定時間ポーリングする
-function enforcePreferredVideoQuality() {
-  let attempts = 0;
-  const maxAttempts = 20; // 500ms間隔で最大10秒間確認・再適用
-
-  const timer = setInterval(() => {
-    attempts++;
-    const result = applyPreferredVideoQuality();
-    if (result === 'confirmed' || result === 'not-applicable' || attempts >= maxAttempts) {
-      clearInterval(timer);
-    }
-  }, 500);
-}
-
-function attachPreferredQualityStateListener(player) {
-  if (!player || player.dataset.yuoQualityListenerAttached) {
+// 動画プレイヤーの優先画質設定（1440pがあれば1440p、なければ1080pを優先）は
+// quality-preference.js（document_start・localStorage操作）と
+// quality-enforcer.js（メインワールドへ注入・プレイヤーAPI直接操作）が担う。
+// #movie_player の getAvailableQualityLevels 等はYouTube本体がメインワールドで
+// DOM要素に直接生やしたプロパティのため、コンテンツスクリプトの隔離ワールドからは
+// 参照できない（isolated world制約）。そのため本体ロジックは main world 注入側に置く。
+function injectQualityEnforcerScript() {
+  if (document.getElementById('youtube-unwatched-opener-quality-enforcer')) {
     return;
   }
-  player.dataset.yuoQualityListenerAttached = 'true';
-
-  if (typeof player.addEventListener === 'function') {
-    player.addEventListener('onStateChange', (state) => {
-      if (state === 1) { // 1 = playing
-        enforcePreferredVideoQuality();
-      }
-    });
-  }
-}
-
-function setupPreferredVideoQuality() {
-  waitForElement('#movie_player', { timeout: 8000 })
-    .then(player => {
-      attachPreferredQualityStateListener(player);
-      enforcePreferredVideoQuality();
-    })
-    .catch(() => {
-      debugLogController.log('[画質設定] movie_player要素が見つかりませんでした');
-    });
+  const script = document.createElement('script');
+  script.id = 'youtube-unwatched-opener-quality-enforcer';
+  script.src = browserAPI.runtime.getURL('quality-enforcer.js');
+  script.onload = function() {
+    this.remove(); // スクリプト自体はグローバルスコープで実行継続するため要素は不要
+  };
+  (document.head || document.documentElement).appendChild(script);
 }
 
 // 履歴API操作をフック
@@ -2919,7 +2856,6 @@ history.pushState = function() {
   setTimeout(recordVideoWatchHistory, 50);
   setTimeout(updatePlaylistPanelForNewVideo, 100);
   setTimeout(handleUrlChangeForHighlighting, 300);
-  setTimeout(setupPreferredVideoQuality, 100);
 };
 
 history.replaceState = function() {
@@ -2927,7 +2863,6 @@ history.replaceState = function() {
   setTimeout(recordVideoWatchHistory, 50);
   setTimeout(updatePlaylistPanelForNewVideo, 100);
   setTimeout(handleUrlChangeForHighlighting, 300);
-  setTimeout(setupPreferredVideoQuality, 100);
 };
 
 // プレイリストパネル表示前のフォーカス保存用
@@ -2938,7 +2873,6 @@ function initializeVideoPageFeatures() {
   if ((window.location.pathname.startsWith('/watch') || window.location.pathname.startsWith('/shorts')) &&
       window.location.pathname !== '/') {
     createPlaylistPanel();
-    setupPreferredVideoQuality();
   }
 }
 
