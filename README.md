@@ -25,6 +25,7 @@ YouTube登録チャンネルページで未視聴動画を効率的に別タブ�
 - **プレイリストパネル**：右サイドバーにYouTubeネイティブのプレイリストダイアログを表示
 - **ショート動画変換**：ショート動画を自動的に通常の動画プレイヤーで再生
 - **画質自動優先設定**：動画再生時に1440p（あれば）／1080pを自動的に優先選択
+- **音量平滑化**：どの動画でも指定したラウドネス（LUFS、デフォルト -14）に音量を自動調整し、動画ごと・場面ごとの音量差を揃える。YouTubeの音量スライダーはそのまま使える
 
 ### 設定機能
 - **ポップアップ設定画面**で各種設定を変更可能（ダークテーマUI）
@@ -67,6 +68,7 @@ cd youtube-unwatched-opener
 1. **動画ページ**で**「r」キー**を押すと後で見るプレイリストに追加/削除
 2. **右サイドバーのプレイリストパネル**でプレイリスト管理が可能
 3. **ショート動画**は自動的に通常の動画プレイヤーで再生
+4. **音量平滑化**は設定画面の「音量平滑化」セクションでON/OFFと目標レベル（-30〜-6 LUFS、大きいほど大音量）を変更できる。変更は再生中の動画にも即時反映される
 
 ### 設定変更
 拡張機能アイコンをクリックして設定画面を開きます。設定は変更と同時に自動保存されます。
@@ -86,6 +88,7 @@ youtube-unwatched-opener/
 ├── browser-polyfill.js  # Chrome/Firefox API抽象化レイヤー
 ├── quality-preference.js # 優先画質設定（document_start実行）
 ├── quality-enforcer.js  # 優先画質設定のセーフティネット（メインワールド実行）
+├── volume-normalizer.js # 音量平滑化（Web Audio API、メインワールド実行）
 ├── content.js           # メインロジック
 ├── background.js        # バックグラウンド処理
 ├── popup.html           # 設定画面HTML
@@ -141,6 +144,9 @@ YouTubeUnwatchedOpener.forceHighlight()
 
 // 未視聴動画検索
 YouTubeUnwatchedOpener.findUnwatched()
+
+// 音量平滑化の状態（推定ラウドネス・補正量）
+__youtubeUnwatchedOpenerVolumeNormalizer.getStatus()
 ```
 
 ### 主要な技術
@@ -154,6 +160,9 @@ YouTubeUnwatchedOpener.findUnwatched()
 MIT License
 
 ## 更新履歴
+
+### v2.2.0 (2026-10-17)
+- **音量平滑化機能を追加**: Web Audio APIで再生音声のラウドネスを計測し、指定した目標レベル（LUFS）に自動で揃える。コンプレッサー／リミッターで急な大音量も抑える
 
 ### v2.1.2 (2026-08-15)
 - **画質自動優先設定のセーフティネットを修正**: content.js側のポーリング処理が、Chrome拡張機能の「隔離ワールド」制約によりYouTubeプレイヤーの内部APIへ一切アクセスできず無効化されていた不具合を修正。同等ロジックをページのメインワールドへ注入して実行する方式に変更

@@ -9,7 +9,9 @@ const DEFAULT_SETTINGS = {
   debugMode: false,  // デバッグモード（詳細ログ出力のON/OFF）
   historyMaxCount: 10000,  // 視聴履歴の最大保持件数
   includeShorts: true,  // 未視聴動画オープナーでショート動画を含めるか
-  hideRelatedVideos: true  // 動画ページ右側の関連動画欄を非表示にするか（データ通信量削減）
+  hideRelatedVideos: true,  // 動画ページ右側の関連動画欄を非表示にするか（データ通信量削減）
+  volumeNormalizeEnabled: true,  // 再生音量を目標ラウドネスに平滑化するか
+  volumeTargetLufs: -14  // 平滑化の目標ラウドネス（LUFS、-30〜-6）
 };
 
 let settings = DEFAULT_SETTINGS;
@@ -2571,6 +2573,7 @@ browserAPI.storage.sync.get(DEFAULT_SETTINGS).then((result) => {
   interceptShortsLinks();
   initializeShortsRedirect();
   injectQualityEnforcerScript();
+  injectVolumeNormalizerScript();
 
   // #secondary要素の出現を待って即時初期化（最大4秒、タイムアウト時はそのまま実行）
   waitForElement('#secondary', { timeout: 4000 })
@@ -2593,6 +2596,9 @@ browserAPI.storage.onChanged.addListener((changes) => {
   }
   if (changes.highlightEnabled) {
     updateHighlighting();
+  }
+  if (changes.volumeNormalizeEnabled || changes.volumeTargetLufs) {
+    publishVolumeNormalizerSettings();
   }
   if (changes.showPlaylistPanel) {
     if (settings.showPlaylistPanel) {
@@ -2843,6 +2849,30 @@ function injectQualityEnforcerScript() {
   script.src = browserAPI.runtime.getURL('quality-enforcer.js');
   script.onload = function() {
     this.remove(); // スクリプト自体はグローバルスコープで実行継続するため要素は不要
+  };
+  (document.head || document.documentElement).appendChild(script);
+}
+
+// 再生音量の平滑化（volume-normalizer.js）もプレイヤーの getVolume() 等を参照するため
+// メインワールドに注入する。設定は隔離ワールドとメインワールドで共有されるDOM属性経由で渡す
+function publishVolumeNormalizerSettings() {
+  document.documentElement.setAttribute('data-youtube-unwatched-opener-volume', JSON.stringify({
+    enabled: !!settings.volumeNormalizeEnabled,
+    targetLufs: Number(settings.volumeTargetLufs)
+  }));
+  document.dispatchEvent(new Event('youtube-unwatched-opener:volume-settings'));
+}
+
+function injectVolumeNormalizerScript() {
+  publishVolumeNormalizerSettings();
+  if (document.getElementById('youtube-unwatched-opener-volume-normalizer')) {
+    return;
+  }
+  const script = document.createElement('script');
+  script.id = 'youtube-unwatched-opener-volume-normalizer';
+  script.src = browserAPI.runtime.getURL('volume-normalizer.js');
+  script.onload = function() {
+    this.remove();
   };
   (document.head || document.documentElement).appendChild(script);
 }

@@ -9,7 +9,9 @@ const DEFAULT_SETTINGS = {
   debugMode: false,
   historyMaxCount: 10000,
   includeShorts: true,
-  hideRelatedVideos: true
+  hideRelatedVideos: true,
+  volumeNormalizeEnabled: true,
+  volumeTargetLufs: -14
 };
 
 // ========== DOM 参照 ==========
@@ -24,17 +26,21 @@ const el = {
   historyMaxCount:       document.getElementById('historyMaxCount'),
   includeShorts:         document.getElementById('includeShorts'),
   hideRelatedVideos:     document.getElementById('hideRelatedVideos'),
+  volumeNormalizeEnabled: document.getElementById('volumeNormalizeEnabled'),
+  volumeTargetLufs:      document.getElementById('volumeTargetLufs'),
   statusDot:             document.getElementById('status-dot'),
   status:                document.getElementById('status'),
   toggleLabel:           document.getElementById('toggle-label'),
   videoCountError:      document.getElementById('videoCountError'),
-  historyMaxCountError: document.getElementById('historyMaxCountError')
+  historyMaxCountError: document.getElementById('historyMaxCountError'),
+  volumeTargetLufsError: document.getElementById('volumeTargetLufsError')
 };
 
 // ========== バリデーション ==========
 const validators = [
   { input: el.videoCount,    errorEl: el.videoCountError,    min: 1,  max: 50    },
-  { input: el.historyMaxCount, errorEl: el.historyMaxCountError, min: 50, max: 10000 }
+  { input: el.historyMaxCount, errorEl: el.historyMaxCountError, min: 50, max: 10000 },
+  { input: el.volumeTargetLufs, errorEl: el.volumeTargetLufsError, min: -30, max: -6 }
 ];
 
 function validateRange(value, min, max) {
@@ -57,7 +63,9 @@ function getSettingsFromDOM() {
     debugMode:             el.debugMode.checked,
     historyMaxCount:       parseInt(el.historyMaxCount.value),
     includeShorts:         el.includeShorts.checked,
-    hideRelatedVideos:     el.hideRelatedVideos.checked
+    hideRelatedVideos:     el.hideRelatedVideos.checked,
+    volumeNormalizeEnabled: el.volumeNormalizeEnabled.checked,
+    volumeTargetLufs:      parseInt(el.volumeTargetLufs.value)
   };
 }
 
@@ -89,6 +97,8 @@ function loadSettings() {
     el.historyMaxCount.value         = settings.historyMaxCount;
     el.includeShorts.checked         = settings.includeShorts;
     el.hideRelatedVideos.checked     = settings.hideRelatedVideos;
+    el.volumeNormalizeEnabled.checked = settings.volumeNormalizeEnabled;
+    el.volumeTargetLufs.value        = settings.volumeTargetLufs;
 
     el.toggleLabel.textContent = settings.enabled ? 'ON' : 'OFF';
 
@@ -136,7 +146,8 @@ el.enabled.addEventListener('change', () => {
 // ========== イベント: その他のトグル・セレクト ==========
 [
   el.shortcutKey, el.highlightEnabled, el.watchLaterKey,
-  el.showPlaylistPanel, el.debugMode, el.includeShorts, el.hideRelatedVideos
+  el.showPlaylistPanel, el.debugMode, el.includeShorts, el.hideRelatedVideos,
+  el.volumeNormalizeEnabled
 ].forEach(input => input.addEventListener('change', saveSettings));
 
 // ========== イベント: 数値入力 ==========

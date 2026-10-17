@@ -26,6 +26,7 @@ YouTube登録チャンネルページ（https://www.youtube.com/feed/subscriptio
 - 右サイドバーにプレイリストパネル表示
 - ショート動画の通常動画プレイヤーでの再生
 - 動画再生時に1440p（あれば）／1080pを優先的に自動選択（4K等への過剰な上振れは避ける）
+- 再生音量の平滑化（どの動画でも指定したラウドネスに揃える）
 
 ## 技術仕様
 
@@ -36,6 +37,7 @@ youtube-unwatched-opener/
 ├── browser-polyfill.js  # Chrome/Firefox API抽象化レイヤー
 ├── quality-preference.js # 優先画質設定（document_startで実行、localStorage直接操作）
 ├── quality-enforcer.js  # 優先画質設定のセーフティネット（<script>注入でメインワールド実行）
+├── volume-normalizer.js # 音量平滑化（Web Audio API、<script>注入でメインワールド実行）
 ├── content.js           # メインロジック（未視聴動画検出、ハイライト、ショート動画変換）
 ├── background.js        # バックグラウンド処理（タブ作成）
 ├── popup.html           # 設定画面HTML
@@ -63,7 +65,9 @@ const DEFAULT_SETTINGS = {
   debugMode: false,
   historyMaxCount: 10000,
   includeShorts: true,
-  hideRelatedVideos: true
+  hideRelatedVideos: true,
+  volumeNormalizeEnabled: true,
+  volumeTargetLufs: -14
 };
 ```
 
@@ -73,7 +77,7 @@ youtube-smart-speed と統一されたダークテーマデザイン：
 - **アクセントカラー**: `#ff4040`（YouTube赤）
 - **ヘッダー**: ロゴアイコン + タイトル/サブタイトル + ON/OFF メイントグル
 - **ステータスバー**: ドットインジケーター + モノスペーステキスト
-- **セクション構成**: 基本設定 / ハイライト表示 / 後で見る / 詳細設定
+- **セクション構成**: 基本設定 / ハイライト表示 / 後で見る / 関連動画欄 / 音量平滑化 / 詳細設定
 - **トグル**: `toggle-track` + `toggle-thumb` 構造（Smart Speed 統一）
 - **入力フィールド**: ダークサーフェス（`--surface2`）スタイル
 - **バリデーション**: CSS `:not(:empty)` によるエラー表示制御
@@ -103,6 +107,15 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
     window.location.replace(newUrl);
 }
 ```
+
+### 音量平滑化（volume-normalizer.js）
+- **信号経路**: `video → [video.volume打ち消しGain] → [ラウドネス補正Gain] → [コンプレッサー] → [リミッター] → [スライダー音量Gain] → 出力`。計測用に `video → [K特性近似フィルタ] → Analyser` の分岐を別に持つ
+- **計測**: 100msごとにAnalyserの二乗平均からラウドネスを求め、直近3秒（EBU R128のshort-term相当）をエネルギー平均して推定する。-60 LUFS以下の無音ブロックは無視する。補正は下げる方向を速く（時定数0.3秒）、上げる方向を遅く（2秒）してポンピングを防ぐ
+- **メインワールド実行**: スライダー値の取得に `.html5-video-player` の `getVolume()`（YouTubeがメインワールドで生やしたメソッド）が必要なため、quality-enforcer.jsと同様に `<script src>` で注入する。設定は content.js が `<html data-youtube-unwatched-opener-volume>` にJSONで書き込み、`youtube-unwatched-opener:volume-settings` イベントで通知する
+- **video.volumeの扱い（Chrome実測）**: `video.volume` / `muted` はMediaElementSourceの出力にも線形に反映される。さらに `video.volume` にはスライダー値に加えYouTube自身のラウドネス正規化による減衰も掛かっている。このため計測値から `video.volume` 分を戻して素材のレベルを求め、出力側では打ち消しGainで `video.volume` を相殺したうえで、スライダー値（`getVolume()/100`）をリミッターの**後段**で掛ける。前段のままだとコンプレッサーにスライダーの音量差が圧縮され、50%にしても約-3dBしか下がらなかった
+- **自動再生ポリシー**: `MediaElementSource` を作ると元の出力経路に戻せず、AudioContextが停止中だと無音になる。そのため `AudioContext.state === 'running'` を確認してから経路を作成し、停止中なら最初のユーザー操作（pointerdown/keydown）で再開する。OFF時は `source → destination` 直結に切り替える
+- **初期推定にplayerResponseのラウドネス値を使わない理由**: `playerConfig.audioConfig.trackAbsoluteLoudnessLkfs` は動画全体の値で、再生位置付近の実測とのズレが動画ごとに一定しないため。0.5秒分の計測が貯まるまでは直前の補正量を維持する
+- **未検証**: Firefoxで `video.volume` がMediaElementSourceの出力に反映されるかは未確認（反映されない実装だと、スライダーの減衰が二重に打ち消される方向にずれる）
 
 ### Firefox対応
 `browser-polyfill.js`でChrome/FirefoxのAPI差異を吸収：
@@ -143,6 +156,10 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
 - 最小権限の原則（activeTab・storage・tabs のみ）
 
 ## 更新履歴
+
+### 2026-10-17: 再生音量の平滑化機能を追加
+- **機能追加**: どの動画でも指定した目標ラウドネス（`volumeTargetLufs`、デフォルト -14 LUFS、-30〜-6）に再生音量を自動で揃える `volume-normalizer.js` を追加。popupに「音量平滑化」セクション（ON/OFF・目標レベル）を新設。設定変更は再生中の動画にも即時反映
+- **検証（ブラウザペインのYouTube実機にスクリプトを注入）**: (1) 計測値の絶対レベルがYouTube自身の値と一致（Despacito: 実装 -8.4 / 左右分離のBS.1770計算 -7.8 / YouTubeの`loudnessDb`から逆算 -8.3 LUFS）、(2) OFF時に -16.4 / -20.3 LUFSと差があった2本の動画がON時に -12.2 / -11.4 LUFSへ揃う、(3) スライダー100%→50%の交互切り替えで出力が -5.7dB（理論値 -6dB）下がり補正Gainは動かない、(4) OFFで直結経路に戻る、(5) `video.volume` の出力反映が線形（0.5→-6.8dB、0.1→-21.1dB）であることを確認。拡張機能としてのパッケージ読み込み（popup操作→content.js経由の設定反映）は未実施
 
 ### 2026-08-15: content.js側の画質ポーリングが「隔離ワールド」制約で無効化されていた不具合を修正
 - **不具合**: localStorage方式（`quality-preference.js`）を導入した後も、実際のChrome（拡張機能導入・最新化済み環境、Claude in Chromeで検証）では1080p/1440pが優先利用されないケースが残っていた
