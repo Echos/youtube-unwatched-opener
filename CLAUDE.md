@@ -26,6 +26,7 @@ YouTube登録チャンネルページ（https://www.youtube.com/feed/subscriptio
 - 右サイドバーにプレイリストパネル表示
 - ショート動画の通常動画プレイヤーでの再生
 - 動画再生時に1440p（あれば）／1080pを優先的に自動選択（4K等への過剰な上振れは避ける）
+- 再生音量の平滑化（どの動画でも指定したラウドネスに揃える）
 
 ## 技術仕様
 
@@ -36,6 +37,7 @@ youtube-unwatched-opener/
 ├── browser-polyfill.js  # Chrome/Firefox API抽象化レイヤー
 ├── quality-preference.js # 優先画質設定（document_startで実行、localStorage直接操作）
 ├── quality-enforcer.js  # 優先画質設定のセーフティネット（<script>注入でメインワールド実行）
+├── volume-normalizer.js # 音量平滑化（Web Audio API、<script>注入でメインワールド実行）
 ├── content.js           # メインロジック（未視聴動画検出、ハイライト、ショート動画変換）
 ├── background.js        # バックグラウンド処理（タブ作成）
 ├── popup.html           # 設定画面HTML
@@ -63,7 +65,9 @@ const DEFAULT_SETTINGS = {
   debugMode: false,
   historyMaxCount: 10000,
   includeShorts: true,
-  hideRelatedVideos: true
+  hideRelatedVideos: true,
+  volumeNormalizeEnabled: true,
+  volumeTargetLufs: -14
 };
 ```
 
@@ -73,7 +77,7 @@ youtube-smart-speed と統一されたダークテーマデザイン：
 - **アクセントカラー**: `#ff4040`（YouTube赤）
 - **ヘッダー**: ロゴアイコン + タイトル/サブタイトル + ON/OFF メイントグル
 - **ステータスバー**: ドットインジケーター + モノスペーステキスト
-- **セクション構成**: 基本設定 / ハイライト表示 / 後で見る / 詳細設定
+- **セクション構成**: 基本設定 / ハイライト表示 / 後で見る / 関連動画欄 / 音量平滑化 / 詳細設定
 - **トグル**: `toggle-track` + `toggle-thumb` 構造（Smart Speed 統一）
 - **入力フィールド**: ダークサーフェス（`--surface2`）スタイル
 - **バリデーション**: CSS `:not(:empty)` によるエラー表示制御
@@ -103,6 +107,15 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
     window.location.replace(newUrl);
 }
 ```
+
+### 音量平滑化（volume-normalizer.js）
+- **信号経路**: `video → [video.volume打ち消しGain] → [ラウドネス補正Gain] → [コンプレッサー] → [リミッター] → [スライダー音量Gain] → 出力`。計測用に `video → [K特性近似フィルタ] → Analyser` の分岐を別に持つ
+- **計測**: 100msごとにAnalyserの二乗平均からラウドネスを求め、直近3秒（EBU R128のshort-term相当）をエネルギー平均して推定する。-60 LUFS以下の無音ブロックは無視する。補正は下げる方向を速く（時定数0.3秒）、上げる方向を遅く（2秒）してポンピングを防ぐ
+- **メインワールド実行**: スライダー値の取得に `.html5-video-player` の `getVolume()`（YouTubeがメインワールドで生やしたメソッド）が必要なため、quality-enforcer.jsと同様に `<script src>` で注入する。設定は content.js が `<html data-youtube-unwatched-opener-volume>` にJSONで書き込み、`youtube-unwatched-opener:volume-settings` イベントで通知する
+- **video.volumeの扱い（Chrome実測）**: `video.volume` / `muted` はMediaElementSourceの出力にも線形に反映される。さらに `video.volume` にはスライダー値に加えYouTube自身のラウドネス正規化による減衰も掛かっている。このため計測値から `video.volume` 分を戻して素材のレベルを求め、出力側では打ち消しGainで `video.volume` を相殺したうえで、スライダー値（`getVolume()/100`）をリミッターの**後段**で掛ける。前段のままだとコンプレッサーにスライダーの音量差が圧縮され、50%にしても約-3dBしか下がらなかった
+- **自動再生ポリシー**: `MediaElementSource` を作ると元の出力経路に戻せず、AudioContextが停止中だと無音になる。そのため `AudioContext.state === 'running'` を確認してから経路を作成し、停止中なら最初のユーザー操作（pointerdown/keydown）で再開する。OFF時は `source → destination` 直結に切り替える
+- **初期推定にplayerResponseのラウドネス値を使わない理由**: `playerConfig.audioConfig.trackAbsoluteLoudnessLkfs` は動画全体の値で、再生位置付近の実測とのズレが動画ごとに一定しないため。0.5秒分の計測が貯まるまでは直前の補正量を維持する
+- **未検証**: Firefoxで `video.volume` がMediaElementSourceの出力に反映されるかは未確認（反映されない実装だと、スライダーの減衰が二重に打ち消される方向にずれる）
 
 ### Firefox対応
 `browser-polyfill.js`でChrome/FirefoxのAPI差異を吸収：
@@ -143,6 +156,26 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
 - 最小権限の原則（activeTab・storage・tabs のみ）
 
 ## 更新履歴
+
+### 2026-10-20: 「r」キーの処理中表示と、切り替えが正しく往復しない不具合の修正
+- **実測（Claude in Chrome・拡張機能導入済み環境）**: キー押下から `browse/edit_playlist` 送信まで7〜12ms（keydownハンドラ自体は9〜18ms）。サーバー応答（TTFB）は追加で約1.1〜1.5秒、削除で約0.9秒で、体感の遅さの大半はYouTubeサーバー側の処理時間であり、クライアント側では短縮できない
+- **不具合1（状態判定）**: 新UI（`toggleable-list-item-view-model`）では選択状態が内側の `button[role=menuitem]` の `aria-pressed` / `aria-label` にあるが、`getWatchLaterItemState()` は属性を持たない `yt-list-item-view-model[role=presentation]` を見て常に `null` を返していた。そのため直前に入れた予測表示・再埋め込み省略が実機では一度も効いていなかった。`[aria-pressed], [aria-checked]` を持つ要素を最優先で探すよう修正
+- **不具合2（往復しない）**: パネルが保持するオフスクリーンのダイアログは、クリック後に通信が完了しても YouTube 内部の選択状態・aria属性が更新されない（実測で確認）。さらに押下1.5秒後の再埋め込み（`get_panel`）が `edit_playlist` の完了前に走ると反映前の状態が返り、次の r で削除ではなく**追加が再送**されていた（実測で再現）
+- **新しい処理フロー**: 押下直後にトースト（スピナー付き「後で見るに追加中…／削除中…」）とパネルのバッジで処理中を表示し、パネル内の一覧を半透明にする → `PerformanceObserver`（Resource Timing）で `edit_playlist` の完了とHTTPステータスを検知してトーストを「追加しました／削除しました」（失敗時はエラー）に更新 → 完了後にダイアログを取り直し（実測300〜530ms）、実際の状態でバッジを確定。処理中に押された r は完了後に1回だけ実行する。8秒以内に完了を検知できない場合も取り直して状態を合わせる
+- **検証**: 実機ページで新しい状態判定が正しい値を返すこと、`edit_playlist` の完了検知（HTTP 200、900〜1138ms）、完了後の取り直しで正しい状態（追加→`true`、削除→`false`）が得られ、追加→削除の往復で後で見るリストが元に戻ることを確認。処理中表示の見た目はCSS/DOMを再現して確認
+- **通し計測（拡張機能を再読み込みした実機）**: 押下後9〜13msでトースト・バッジに処理中を表示 → `edit_playlist` 完了直後（0.9〜1.6秒）にトーストを「追加しました／削除しました」に更新（隔離ワールドからの `PerformanceObserver` 受信も動作）→ 取り直し後（1.4〜2.2秒）にバッジ確定。追加→削除の往復、300ms間隔の連打（追加→完了後に削除）とも後で見るリストが期待どおりの状態になることを確認。単発時の内訳は edit_playlist 1230ms ＋ get_panel 520ms ＋ YouTubeのダイアログ描画 約110ms ＋ 拡張機能のパネル反映 11ms で、拡張機能側の処理は合計20ms強。パネル一覧の複製（約730要素）は `cloneNode` 約3ms・配置とレイアウト込みで約18ms。動画終了時など YouTube 側の描画が重い時間帯は、keydown 処理自体が最大150ms待たされることがある（拡張機能の処理ではない）
+
+### 2026-10-20: 「r」キー（後で見る切り替え）の反応速度と全体の処理性能を改善
+- **「r」キーの反応**: プレイリストパネル経由のトグル時、クリック直前の状態から予測した結果をバッジに即時表示し、YouTube側の反映後に実際の状態で確定させる（予測表示中の1.5秒間は反映前の古い状態で表示を戻さない）。`syncObserver` が新UIの選択状態（`aria-pressed` / `aria-label`）を監視していなかったため4回の遅延再構築に頼っていた点を修正し、デバウンスも150ms→50msに短縮
+- **保存ダイアログの再埋め込みを条件付きに**: 従来は r キーのたびに1.8秒後に保存ボタンを再クリックしてダイアログを取り直しており、その間はパネル状態が空になって次の r キーが遅い経路（保存ボタン経由）に落ちていた。クリック前の状態から変化していない（=反映されていない）場合だけ再埋め込みするよう変更。埋め込み処理中の r キーは完了後に1回だけ処理する
+- **視聴履歴判定のキャッシュ化**: `watchHistoryManager.isUrlWatched()` が判定のたびに最大10000件の履歴JSONを2回解析し全件を走査していたため、登録チャンネルページで動画数×履歴件数の処理がメインスレッドを塞いでいた。履歴をメモリにキャッシュし、動画IDの `Set` で判定する（Node.jsでの計測: 履歴10000件・200動画の判定が 806ms → 5ms）。他タブでの更新は `storage` イベントでキャッシュを破棄する
+- **ハイライト再判定の範囲縮小**: `#contents` 内のDOM変化のたびに全動画のキャッシュを破棄していたのを、変化した動画要素と追加された動画要素だけに限定
+- **その他**: `isButtonVisible()` を `checkVisibility()` ベースに変更（YouTube実機の273ボタンで旧判定と完全一致・約8倍高速。`opacityProperty` は祖先のopacityまで見て旧判定とずれるため使わない）、調査用に残っていた常時出力のDEBUGログ・スタックトレース付きObserverを削除または `debugMode` 時のみに限定、非表示タブではシークバー維持用の疑似mousemoveを止める、SPA遷移を `yt-navigate-finish` で検知（隔離ワールドでの `history.pushState` 差し替えはYouTube本体の呼び出しを捕捉できないため）、バックグラウンドタブで埋め込みを保留した際に `_isEmbedding` が戻らず再開できなかった不具合を修正
+- **未検証**: ブラウザペインはYouTube未ログインのため、「後で見る」の実トグル（予測表示→確定、再埋め込みの省略）は実機で確認できていない
+
+### 2026-10-17: 再生音量の平滑化機能を追加
+- **機能追加**: どの動画でも指定した目標ラウドネス（`volumeTargetLufs`、デフォルト -14 LUFS、-30〜-6）に再生音量を自動で揃える `volume-normalizer.js` を追加。popupに「音量平滑化」セクション（ON/OFF・目標レベル）を新設。設定変更は再生中の動画にも即時反映
+- **検証（ブラウザペインのYouTube実機にスクリプトを注入）**: (1) 計測値の絶対レベルがYouTube自身の値と一致（Despacito: 実装 -8.4 / 左右分離のBS.1770計算 -7.8 / YouTubeの`loudnessDb`から逆算 -8.3 LUFS）、(2) OFF時に -16.4 / -20.3 LUFSと差があった2本の動画がON時に -12.2 / -11.4 LUFSへ揃う、(3) スライダー100%→50%の交互切り替えで出力が -5.7dB（理論値 -6dB）下がり補正Gainは動かない、(4) OFFで直結経路に戻る、(5) `video.volume` の出力反映が線形（0.5→-6.8dB、0.1→-21.1dB）であることを確認。拡張機能としてのパッケージ読み込み（popup操作→content.js経由の設定反映）は未実施
 
 ### 2026-08-15: content.js側の画質ポーリングが「隔離ワールド」制約で無効化されていた不具合を修正
 - **不具合**: localStorage方式（`quality-preference.js`）を導入した後も、実際のChrome（拡張機能導入・最新化済み環境、Claude in Chromeで検証）では1080p/1440pが優先利用されないケースが残っていた

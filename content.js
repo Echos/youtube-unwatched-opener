@@ -9,7 +9,9 @@ const DEFAULT_SETTINGS = {
   debugMode: false,  // デバッグモード（詳細ログ出力のON/OFF）
   historyMaxCount: 10000,  // 視聴履歴の最大保持件数
   includeShorts: true,  // 未視聴動画オープナーでショート動画を含めるか
-  hideRelatedVideos: true  // 動画ページ右側の関連動画欄を非表示にするか（データ通信量削減）
+  hideRelatedVideos: true,  // 動画ページ右側の関連動画欄を非表示にするか（データ通信量削減）
+  volumeNormalizeEnabled: true,  // 再生音量を目標ラウドネスに平滑化するか
+  volumeTargetLufs: -14  // 平滑化の目標ラウドネス（LUFS、-30〜-6）
 };
 
 let settings = DEFAULT_SETTINGS;
@@ -57,6 +59,11 @@ const debugLogController = {
     }
   }
 };
+
+// デバッグモード時のみ出力する詳細ログ（高頻度に呼ばれる箇所向け、スロットリングなし）
+function debugLog(...args) {
+  if (settings.debugMode) console.log(...args);
+}
 
 // MutationObserverベースの要素出現待機ユーティリティ
 function waitForElement(selector, options = {}) {
@@ -129,23 +136,49 @@ const watchHistoryManager = {
     return null;
   },
   
+  // 履歴はlocalStorageから1回だけ読み込んでメモリにキャッシュする。
+  // 最大10000件のJSONを判定のたびに解析すると、登録チャンネルページで
+  // 動画数×履歴件数の処理がメインスレッドを塞ぎ、キー入力の反応まで遅れるため。
+  // 他タブでの更新は storage イベントでキャッシュを破棄して追従する
+  _cache: null,
+  _idSet: null,
+
+  invalidateCache: function() {
+    this._cache = null;
+    this._idSet = null;
+  },
+
   // 履歴をlocalStorageから読み込み
   getHistory: function() {
+    if (this._cache) return this._cache;
     try {
       const historyJson = localStorage.getItem(this.STORAGE_KEY);
-      if (!historyJson) {
-        return [];
-      }
-      const history = JSON.parse(historyJson);
-      return Array.isArray(history) ? history : [];
+      const history = historyJson ? JSON.parse(historyJson) : [];
+      this._cache = Array.isArray(history) ? history : [];
     } catch (error) {
       debugLogController.log(`[履歴] 履歴読み込みエラー: ${error.message}`);
-      return [];
+      this._cache = [];
     }
+    return this._cache;
   },
-  
+
+  // videoId と、URLから抽出したID（ショート⇔通常動画の相互変換分）の集合
+  getIdSet: function() {
+    if (this._idSet) return this._idSet;
+    const ids = new Set();
+    for (const item of this.getHistory()) {
+      if (item.videoId) ids.add(item.videoId);
+      const urlId = item.url ? this.extractVideoId(item.url) : null;
+      if (urlId) ids.add(urlId);
+    }
+    this._idSet = ids;
+    return ids;
+  },
+
   // 履歴をlocalStorageに保存
   saveHistory: function(history) {
+    this._cache = history;
+    this._idSet = null;
     try {
       localStorage.setItem(this.STORAGE_KEY, JSON.stringify(history));
     } catch (error) {
@@ -194,43 +227,23 @@ const watchHistoryManager = {
   isWatched: function(videoId) {
     if (!videoId) return false;
     
-    const history = this.getHistory();
-    const found = history.some(item => item.videoId === videoId);
-    
+    const found = this.getIdSet().has(videoId);
+
     if (found) {
       debugLogController.log(`[履歴] 視聴済み動画を検出: ${videoId}`);
     }
-    
+
     return found;
   },
-  
-  // 動画URLが視聴済みかチェック（ショート⇔通常動画の相互変換対応）
+
+  // 動画URLが視聴済みかチェック（ショート⇔通常動画の相互変換対応はIDの集合側で吸収）
   isUrlWatched: function(videoUrl) {
-    const videoId = this.extractVideoId(videoUrl);
-    if (!videoId) return false;
-    
-    // 基本的な履歴チェック
-    if (this.isWatched(videoId)) {
-      return true;
-    }
-    
-    // ショート動画と通常動画の相互変換でチェック
-    const history = this.getHistory();
-    const found = history.some(item => {
-      if (item.videoId === videoId) {
-        return true;
-      }
-      
-      // URLの形式変換をチェック
-      const itemVideoId = this.extractVideoId(item.url);
-      return itemVideoId === videoId;
-    });
-    
-    return found;
+    return this.isWatched(this.extractVideoId(videoUrl));
   },
-  
+
   // 履歴のクリア
   clearHistory: function() {
+    this.invalidateCache();
     try {
       localStorage.removeItem(this.STORAGE_KEY);
       debugLogController.log('[履歴] 視聴履歴をクリアしました');
@@ -252,6 +265,13 @@ const watchHistoryManager = {
     };
   }
 };
+
+// 他タブで視聴履歴が更新されたらキャッシュを破棄する
+window.addEventListener('storage', (event) => {
+  if (event.key === watchHistoryManager.STORAGE_KEY || event.key === null) {
+    watchHistoryManager.invalidateCache();
+  }
+});
 
 // 従来の未視聴判定関数（非推奨：getSimpleVideoStatus関数に統合済み）
 // この関数は新しい統一判定ロジック getSimpleVideoStatus() に置き換えられました
@@ -622,10 +642,10 @@ function getVideoTimestamp(videoElement) {
 }
 
 function findPlaylistVideos() {
-  console.log('[DEBUG] プレイリスト動画検索開始');
+  debugLog('[DEBUG] プレイリスト動画検索開始');
 
   const videoElements = document.querySelectorAll('#contents ytd-playlist-video-renderer');
-  console.log(`[DEBUG] プレイリスト動画要素数: ${videoElements.length}`);
+  debugLog(`[DEBUG] プレイリスト動画要素数: ${videoElements.length}`);
 
   const videos = [];
 
@@ -634,7 +654,7 @@ function findPlaylistVideos() {
 
     const linkElement = videoElement.querySelector('a#video-title[href*="/watch?v="]');
     if (!linkElement) {
-      console.log(`[DEBUG] 動画${i}: リンク要素が見つかりません`);
+      debugLog(`[DEBUG] 動画${i}: リンク要素が見つかりません`);
       continue;
     }
 
@@ -642,7 +662,7 @@ function findPlaylistVideos() {
 
     if (videoUrl.includes('/shorts/')) {
       videoUrl = videoUrl.replace('/shorts/', '/watch?v=');
-      console.log(`[DEBUG] ショート動画を通常動画に変換: ${videoUrl}`);
+      debugLog(`[DEBUG] ショート動画を通常動画に変換: ${videoUrl}`);
     }
 
     videos.push({
@@ -650,10 +670,10 @@ function findPlaylistVideos() {
       timestamp: i
     });
 
-    console.log(`[DEBUG] 動画${i}: ${videoUrl}`);
+    debugLog(`[DEBUG] 動画${i}: ${videoUrl}`);
   }
 
-  console.log(`[DEBUG] プレイリスト動画検索完了 - 合計: ${videos.length}本`);
+  debugLog(`[DEBUG] プレイリスト動画検索完了 - 合計: ${videos.length}本`);
 
   return videos;
 }
@@ -664,17 +684,17 @@ function findUnwatchedVideos() {
   const isAllowedPage = isSubscriptionsFeedPage(currentPath);
 
   if (!isAllowedPage) {
-    console.log(`[DEBUG] 未視聴動画検索スキップ: 対象外ページ (${currentPath})`);
+    debugLog(`[DEBUG] 未視聴動画検索スキップ: 対象外ページ (${currentPath})`);
     console.log(`[INFO] 未視聴動画オープナーは登録チャンネルページ（/feed/subscriptions）でのみ動作します。`);
     return []; // 対象外のページでは空配列を返す
   }
   
-  console.log(`[DEBUG] 未視聴動画検索実行: 対象ページ (${currentPath})`);
+  debugLog(`[DEBUG] 未視聴動画検索実行: 対象ページ (${currentPath})`);
   
   // ハイライト機能と統一したセレクタを使用
   const videoElements = document.querySelectorAll('#contents ytd-rich-item-renderer');
   
-  console.log(`[DEBUG] 未視聴動画検索開始 - 要素数: ${videoElements.length}`);
+  debugLog(`[DEBUG] 未視聴動画検索開始 - 要素数: ${videoElements.length}`);
   
   const unwatchedVideos = [];
   let totalElements = videoElements.length;
@@ -692,25 +712,25 @@ function findUnwatchedVideos() {
     // 配信予定、視聴済み動画（プレミア・LIVE・ショート）を除外
     if (status === 'shorts-watched') {
       shortsExcluded++;
-      console.log('[DEBUG] 視聴済みショート動画を除外');
+      debugLog('[DEBUG] 視聴済みショート動画を除外');
       continue;
     }
 
     if (status === 'scheduled') {
       scheduledExcluded++;
-      console.log('[DEBUG] 配信予定動画を除外');
+      debugLog('[DEBUG] 配信予定動画を除外');
       continue;
     }
 
     if (status === 'live-watched') {
       liveExcluded++;
-      console.log('[DEBUG] 視聴済みライブ動画を除外');
+      debugLog('[DEBUG] 視聴済みライブ動画を除外');
       continue;
     }
 
     if (status === 'premiere-watched') {
       premiereExcluded++;
-      console.log('[DEBUG] 視聴済みプレミア動画を除外');
+      debugLog('[DEBUG] 視聴済みプレミア動画を除外');
       continue;
     }
 
@@ -731,7 +751,7 @@ function findUnwatchedVideos() {
         const videoType = status === 'live' ? 'LIVE' :
                           status === 'premiere' ? 'プレミア' :
                           (status === 'shorts-unwatched' || status === 'shorts') ? 'ショート' : '通常';
-        console.log(`[DEBUG] 未視聴${videoType}動画を追加: ${url}`);
+        debugLog(`[DEBUG] 未視聴${videoType}動画を追加: ${url}`);
         unwatchedVideos.push({
           url: url,
           timestamp: getVideoTimestamp(videoElement),
@@ -742,7 +762,7 @@ function findUnwatchedVideos() {
     }
   }
   
-  console.log(`[DEBUG] 検索結果 - 合計要素: ${totalElements}, 視聴済みショート除外: ${shortsExcluded}, 配信予定除外: ${scheduledExcluded}, 視聴済みライブ除外: ${liveExcluded}, 視聴済みプレミア除外: ${premiereExcluded}, 未視聴動画（LIVE・プレミア・ショート含む): ${regularVideosFound}`);
+  debugLog(`[DEBUG] 検索結果 - 合計要素: ${totalElements}, 視聴済みショート除外: ${shortsExcluded}, 配信予定除外: ${scheduledExcluded}, 視聴済みライブ除外: ${liveExcluded}, 視聴済みプレミア除外: ${premiereExcluded}, 未視聴動画（LIVE・プレミア・ショート含む): ${regularVideosFound}`);
   
   return unwatchedVideos.sort((a, b) => a.timestamp - b.timestamp);
 }
@@ -760,11 +780,11 @@ function openUnwatchedVideos() {
   let messagePrefix;
 
   if (isWatchLaterPlaylist) {
-    console.log('[DEBUG] 後で見るリストページで動画を開きます');
+    debugLog('[DEBUG] 後で見るリストページで動画を開きます');
     videos = findPlaylistVideos();
     messagePrefix = 'YouTube後で見るオープナー';
   } else {
-    console.log('[DEBUG] 登録チャンネルページで未視聴動画を開きます');
+    debugLog('[DEBUG] 登録チャンネルページで未視聴動画を開きます');
     videos = findUnwatchedVideos();
     messagePrefix = 'YouTube未視聴動画オープナー';
   }
@@ -862,16 +882,6 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
   }
 });
-
-function injectCSS() {
-  if (!document.getElementById('youtube-unwatched-opener-styles')) {
-    const link = document.createElement('link');
-    link.id = 'youtube-unwatched-opener-styles';
-    link.rel = 'stylesheet';
-    link.href = browserAPI.runtime.getURL('highlight.css');
-    document.head.appendChild(link);
-  }
-}
 
 function getVideoStatus(videoElement) {
   // まず履歴チェックを追加（最優先）
@@ -1331,8 +1341,9 @@ function outputYouTubeStructureInfo() {
   console.log('YouTubeUnwatchedOpener.diagnose()');
 }
 
+// highlight.css は manifest.json の content_scripts（document_start）で注入済みのため、
+// ここで <link> を追加し直さない（同じCSSの二重読み込みになる）
 function initializeHighlighting() {
-  injectCSS();
   updateHighlighting();
 
   // ハイライト専用Observerは削除 - メインObserverに統合済み
@@ -1374,6 +1385,9 @@ function attachPersistentSeekBarObserver(player) {
 function startSeekBarKeepAlive() {
   let toggle = false;
   setInterval(() => {
+    if (document.hidden) {
+      return;
+    }
     const video = document.querySelector('video.html5-main-video');
     if (!video || video.paused || video.ended) {
       return;
@@ -1494,12 +1508,12 @@ const PLAYLIST_DIALOG_SELECTORS = [
 function isValidPlaylistDialog(el) {
   if (!el) return false;
   if (el.offsetWidth === 0 || el.offsetHeight === 0) {
-    console.log('[DEBUG isValidPlaylistDialog] reject: 0サイズ', el.tagName, el.className);
+    debugLog('[DEBUG isValidPlaylistDialog] reject: 0サイズ', el.tagName, el.className);
     return false;
   }
   const style = window.getComputedStyle(el);
   if (style.display === 'none' || style.visibility === 'hidden') {
-    console.log('[DEBUG isValidPlaylistDialog] reject: 非表示', el.tagName, el.className);
+    debugLog('[DEBUG isValidPlaylistDialog] reject: 非表示', el.tagName, el.className);
     return false;
   }
   const itemSelectors =
@@ -1513,7 +1527,7 @@ function isValidPlaylistDialog(el) {
       break;
     }
   }
-  console.log(`[DEBUG isValidPlaylistDialog] ${el.tagName}.${el.className} | itemCount=${items.length} | hasWatchLater=${hasWatchLater} | innerHTML.length=${el.innerHTML.length}`);
+  debugLog(`[DEBUG isValidPlaylistDialog] ${el.tagName}.${el.className} | itemCount=${items.length} | hasWatchLater=${hasWatchLater} | innerHTML.length=${el.innerHTML.length}`);
   if (!hasWatchLater) return false;
   if (items.length < 3) return false;
   return true;
@@ -1613,7 +1627,10 @@ function getWatchLaterItemState(originalDialog) {
     const text = (item.textContent || item.getAttribute('aria-label') || '').toLowerCase();
     if (!text.includes('後で見る') && !text.includes('watch later') && !text.includes('あとで見る')) continue;
 
-    const inner = item.querySelector(
+    // 新UI（toggleable-list-item-view-model）では選択状態は内側の button[role=menuitem] の
+    // aria-pressed / aria-label にあり、途中の yt-list-item-view-model（role=presentation）は
+    // 属性を持たない。状態を持つ要素を最優先で探す
+    const inner = item.querySelector('[aria-pressed], [aria-checked]') || item.querySelector(
       '[role="checkbox"], input[type="checkbox"], tp-yt-paper-checkbox, yt-checkbox-shape, yt-list-item-view-model, button'
     ) || item;
     const ariaChecked = inner.getAttribute('aria-checked') ?? item.getAttribute('aria-checked');
@@ -1644,6 +1661,8 @@ function getWatchLaterItemState(originalDialog) {
 function updateWatchLaterStatusBadge(panel, originalDialog) {
   const badge = panel.querySelector('#playlist-panel-watchlater-status');
   if (!badge) return;
+  // r キーでの切り替え中は「処理中」表示を維持し、反映前の古い状態で上書きしない
+  if (panel._watchLaterBusy) return;
   const state = getWatchLaterItemState(originalDialog);
   if (state === true) {
     badge.textContent = '後で見るに追加済み';
@@ -1663,21 +1682,8 @@ function setupCloneSync(panel, originalDialog) {
   let syncTimeout = null;
   const doSync = () => {
     if (!document.contains(panel) || !document.contains(originalDialog)) {
-      console.log(`[DEBUG doSync] スキップ panelInDoc=${document.contains(panel)} origInDoc=${document.contains(originalDialog)}`);
+      debugLog(`[DEBUG doSync] スキップ panelInDoc=${document.contains(panel)} origInDoc=${document.contains(originalDialog)}`);
       return;
-    }
-    // 診断: 後で見る項目の aria-pressed と aria-label
-    const wlItem = Array.from(originalDialog.querySelectorAll(
-      'toggleable-list-item-view-model, yt-list-item-view-model, ytd-playlist-add-to-option-renderer'
-    )).find(it => {
-      const t = (it.textContent || '').toLowerCase();
-      return t.includes('後で見る') || t.includes('watch later') || t.includes('あとで見る');
-    });
-    if (wlItem) {
-      const inner = wlItem.querySelector('yt-list-item-view-model, button');
-      const ariaPressed = inner ? inner.getAttribute('aria-pressed') : wlItem.getAttribute('aria-pressed');
-      const ariaLabel = inner ? inner.getAttribute('aria-label') : wlItem.getAttribute('aria-label');
-      console.log(`[DEBUG doSync] 後で見る aria-pressed=${ariaPressed} aria-label="${ariaLabel}"`);
     }
     updateWatchLaterStatusBadge(panel, originalDialog);
     const newClone = buildStyledClone(originalDialog);
@@ -1687,13 +1693,14 @@ function setupCloneSync(panel, originalDialog) {
   };
   const syncObserver = new MutationObserver(() => {
     if (syncTimeout) clearTimeout(syncTimeout);
-    syncTimeout = setTimeout(doSync, 150);
+    syncTimeout = setTimeout(doSync, 50);
   });
+  // 新UI（Material 3）は選択状態を aria-pressed / aria-label で表すため、それらも監視する
   syncObserver.observe(originalDialog, {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ['aria-checked', 'checked', 'class']
+    attributeFilter: ['aria-checked', 'aria-pressed', 'aria-label', 'checked', 'class']
   });
   // オリジナルが DOM から消えた場合は再取得
   // また、パネル表示中に別の保存ボタン操作で新ダイアログが出現した場合も捕捉する
@@ -1770,11 +1777,11 @@ function mountDialogClone(panel, originalDialog) {
   // クローンを生成してパネルにマウント
   const clone = buildStyledClone(originalDialog);
   clone.addEventListener('click', (e) => forwardClickToOriginal(e, originalDialog));
-  console.log(`[DEBUG mountDialogClone] container.innerHTML='' 実行直前 children=${container.children.length}`);
+  debugLog(`[DEBUG mountDialogClone] container.innerHTML='' 実行直前 children=${container.children.length}`);
   container.innerHTML = '';
-  console.log(`[DEBUG mountDialogClone] container.innerHTML='' 実行直後 children=${container.children.length}`);
+  debugLog(`[DEBUG mountDialogClone] container.innerHTML='' 実行直後 children=${container.children.length}`);
   container.appendChild(clone);
-  console.log(`[DEBUG mountDialogClone] appendChild 直後 children=${container.children.length} firstChild=${container.firstElementChild && container.firstElementChild.tagName}`);
+  debugLog(`[DEBUG mountDialogClone] appendChild 直後 children=${container.children.length} firstChild=${container.firstElementChild && container.firstElementChild.tagName}`);
   // 「後で見る」の現在の状態をヘッダーに反映
   updateWatchLaterStatusBadge(panel, originalDialog);
   // 同期機構を開始して状態を保存
@@ -1836,6 +1843,13 @@ function teardownPlaylistPanel(panel) {
 function isButtonVisible(button) {
   if (!button) return false;
   if (button.offsetWidth === 0 && button.offsetHeight === 0) return false;
+  // 対応ブラウザ（Chrome 121+ / Firefox 125+）では祖先を辿る getComputedStyle の繰り返しを避ける。
+  // opacityProperty は祖先の opacity まで見てしまい（自動非表示中のプレイヤー操作部など）
+  // 従来の判定とずれるため使わず、自要素の opacity のみ個別に確認する
+  if (typeof button.checkVisibility === 'function') {
+    if (window.getComputedStyle(button).opacity === '0') return false;
+    return button.checkVisibility({ visibilityProperty: true });
+  }
   const style = window.getComputedStyle(button);
   if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
   // 祖先要素が非表示でないか確認
@@ -2104,36 +2118,98 @@ function handlePlaylistDialog(action = 'toggle') {
   });
 }
 
-// r キーでトグルした直後、YouTube の状態反映に時間差があるため
-// 複数タイミングでクローンを再構築して最終状態に追従させる
-function schedulePanelResync(panel, delays = [120, 400, 1000, 2000]) {
-  if (!panel || !document.contains(panel)) return;
-  for (const ms of delays) {
-    setTimeout(() => {
-      if (!document.contains(panel)) return;
-      const state = playlistPanelState.get(panel);
-      if (state && typeof state.resync === 'function') {
-        try {
-          state.resync();
-        } catch (e) {
-          console.log('[INFO] プレイリストパネル resync 失敗:', e && e.message);
-        }
+// 「後で見る」の追加/削除は YouTube の edit_playlist API で行われ、実測でサーバー応答に
+// 約0.9〜1.5秒かかる（クライアント側では短縮できない）。またパネルが保持するオフスクリーンの
+// ダイアログは、クリック後も YouTube 内部の選択状態・aria 属性が更新されない。
+// そのため、押下直後に「処理中」を表示し、edit_playlist の通信完了を Resource Timing で検知して
+// 結果を表示したうえで、完了後にダイアログを取り直して次の操作に備える。
+// （通信完了前に取り直すと反映前の状態が返り、次の r で削除ではなく追加が再送される）
+const PLAYLIST_EDIT_REQUEST_PATTERN = /\/youtubei\/v1\/browse\/edit_playlist/;
+
+function waitForPlaylistEditRequest(since, timeout = 8000) {
+  return new Promise((resolve) => {
+    const isTarget = (entry) => PLAYLIST_EDIT_REQUEST_PATTERN.test(entry.name) && entry.startTime >= since - 50;
+    let observer = null;
+    let timer = null;
+    const finish = (entry) => {
+      if (observer) observer.disconnect();
+      clearTimeout(timer);
+      if (!entry) {
+        resolve(null);
+        return;
       }
-    }, ms);
+      // responseStatus は Chrome 109+。未対応環境では成否不明として成功扱いにする
+      const status = typeof entry.responseStatus === 'number' ? entry.responseStatus : 0;
+      resolve({ status, ok: status === 0 || (status >= 200 && status < 400), duration: entry.duration });
+    };
+    try {
+      observer = new PerformanceObserver((list) => {
+        const entry = list.getEntries().find(isTarget);
+        if (entry) finish(entry);
+      });
+      observer.observe({ type: 'resource' });
+    } catch (e) {
+      debugLog('[後で見る切り替え] PerformanceObserver を利用できません', e && e.message);
+    }
+    timer = setTimeout(() => finish(null), timeout);
+  });
+}
+
+function getWatchLaterMessages(expected) {
+  if (expected === true) return { pending: '後で見るに追加中…', done: '後で見るに追加しました' };
+  if (expected === false) return { pending: '後で見るから削除中…', done: '後で見るから削除しました' };
+  return { pending: '後で見るを更新中…', done: '後で見るを更新しました' };
+}
+
+function setWatchLaterBusy(panel, busy, pendingText = '') {
+  panel._watchLaterBusy = busy;
+  panel.classList.toggle('watchlater-busy', busy);
+  if (!busy) return;
+  const badge = panel.querySelector('#playlist-panel-watchlater-status');
+  if (badge) {
+    badge.textContent = pendingText;
+    badge.className = 'watchlater-status pending';
   }
 }
 
-// r キーでのトグル後、YouTube 側の反映を待ってからパネルを完全に再埋め込みする。
-// クローンの同期（resync）だけでは、合成クリックが YouTube 側に反映されなかった
-// 場合に誤った状態のまま固定されてしまうため、保存ボタンを再度クリックして
-// 新しいダイアログを取得し直すことで、常に実際のサーバー側の状態に合わせる。
-// keepCurrentContent により、取得完了までは既存表示を維持しちらつきを防ぐ。
-function scheduleFullReembed(panel, delay = 1800) {
-  setTimeout(() => {
-    if (!panel || !document.contains(panel)) return;
-    console.log('[後で見る切り替え] パネルを完全に再埋め込みして最新状態を取得');
-    embedPlaylistDialog(panel, { keepCurrentContent: true });
-  }, delay);
+// r キーでの切り替え後の「処理中」表示と完了処理
+// expected: 切り替え後に期待する状態（true=追加 / false=削除 / null=不明）
+function trackWatchLaterToggle(panel, expected) {
+  const since = performance.now();
+  const messages = getWatchLaterMessages(expected);
+  toastController.show(messages.pending, 'pending', 10000);
+  if (panel) setWatchLaterBusy(panel, true, messages.pending);
+
+  waitForPlaylistEditRequest(since).then((result) => {
+    if (!result) {
+      toastController.update('後で見るの更新を確認できませんでした', 'warning', 3000);
+    } else if (result.ok) {
+      toastController.update(messages.done, 'success', 2000);
+      debugLog(`[後で見る切り替え] edit_playlist 完了 (${Math.round(result.duration)}ms)`);
+    } else {
+      toastController.update(`後で見るの更新に失敗しました（HTTP ${result.status}）`, 'error', 4000);
+    }
+    if (panel && document.contains(panel)) {
+      // 完了後の取り直しが終わるまで処理中表示を維持し、埋め込み完了時に実際の状態で確定させる
+      embedPlaylistDialog(panel, { keepCurrentContent: true });
+    }
+  });
+}
+
+// 埋め込み完了（または失敗）時に、r キーでの処理中表示を解除して実際の状態を表示する
+function finishWatchLaterBusy(panel) {
+  if (!panel._watchLaterBusy) return;
+  setWatchLaterBusy(panel, false);
+  const state = playlistPanelState.get(panel);
+  if (state && document.contains(state.originalDialog)) {
+    updateWatchLaterStatusBadge(panel, state.originalDialog);
+  } else {
+    const badge = panel.querySelector('#playlist-panel-watchlater-status');
+    if (badge) {
+      badge.textContent = '';
+      badge.className = 'watchlater-status';
+    }
+  }
 }
 
 function toggleWatchLater() {
@@ -2142,28 +2218,34 @@ function toggleWatchLater() {
   // 1. プレイリストパネルがある場合はオリジナルダイアログを直接操作
   const playlistPanel = document.getElementById(PANEL_ID);
   if (playlistPanel) {
-    console.log('[後で見る切り替え] プレイリストパネルを検出');
+    debugLog('[後で見る切り替え] プレイリストパネルを検出');
+    // パネルがダイアログを取得し直している最中や、直前の切り替えが完了していない間は、
+    // 完了後に1回だけトグルする。古いダイアログのままクリックすると、YouTube 内部の
+    // 状態が更新されていないため削除のつもりが追加の再送になる
+    if (playlistPanel._isEmbedding || playlistPanel._watchLaterBusy) {
+      console.log('[後で見る切り替え] 処理中のため、完了後にトグルします');
+      playlistPanel._pendingToggle = true;
+      toastController.update('前の操作の完了後に切り替えます', 'pending', 10000);
+      return;
+    }
     const state = playlistPanelState.get(playlistPanel);
     if (state && state.originalDialog && document.contains(state.originalDialog)) {
       const itemSelectors =
         'ytd-playlist-add-to-option-renderer, yt-list-item-view-model, toggleable-list-item-view-model';
       const items = state.originalDialog.querySelectorAll(itemSelectors);
-      console.log(`[後で見る切り替え] オリジナルダイアログ内の項目数: ${items.length}`);
+      debugLog(`[後で見る切り替え] オリジナルダイアログ内の項目数: ${items.length}`);
       for (const item of items) {
         const text = (item.textContent || item.getAttribute('aria-label') || '').toLowerCase();
         if (text.includes('後で見る') || text.includes('watch later') ||
             text.includes('watchlater') || text.includes('あとで見る')) {
           console.log(`[後で見る切り替え] オリジナルダイアログの項目をクリック: ${item.tagName}`);
+          const stateBeforeClick = getWatchLaterItemState(state.originalDialog);
           // Shadow DOM 内のボタン/チェックボックスを優先してクリック
           const shadowBtn = item.shadowRoot &&
             item.shadowRoot.querySelector('button, [role="checkbox"], input, tp-yt-paper-checkbox, yt-checkbox-shape');
           const childBtn = item.querySelector('button, [role="checkbox"], input, tp-yt-paper-checkbox, yt-checkbox-shape');
           (shadowBtn || childBtn || item).click();
-          // 既存 originalDialog はそのまま保持し、複数遅延でクローン再構築
-          schedulePanelResync(playlistPanel, [200, 600, 1200, 2000]);
-          // 合成クリックが YouTube 側に反映されていない場合に備え、
-          // 少し待ってから保存ダイアログを取得し直して最新状態に同期する
-          scheduleFullReembed(playlistPanel);
+          trackWatchLaterToggle(playlistPanel, stateBeforeClick === null ? null : !stateBeforeClick);
           return;
         }
       }
@@ -2181,12 +2263,7 @@ function toggleWatchLater() {
     console.log('[後で見る切り替え] 直接表示の保存ボタンをクリック');
     directSaveBtn.click();
     handlePlaylistDialog('toggle');
-    // 新ダイアログ経由になるため bodyObserver の再 mount 後にも resync が当たるよう長めに刻む
-    const panel = document.getElementById(PANEL_ID);
-    if (panel) {
-      schedulePanelResync(panel, [300, 800, 1600, 2500]);
-      scheduleFullReembed(panel);
-    }
+    trackWatchLaterToggle(document.getElementById(PANEL_ID), null);
     return;
   }
 
@@ -2195,6 +2272,7 @@ function toggleWatchLater() {
   if (menuBtn) {
     console.log('[後で見る切り替え] メニューボタンをクリック');
     menuBtn.click();
+    toastController.show('後で見るを更新中…', 'pending', 10000);
 
     waitForElement('ytd-menu-service-item-renderer, tp-yt-paper-item, ytd-menu-navigation-item-renderer, yt-list-item-view-model', {
       timeout: 3000,
@@ -2207,15 +2285,15 @@ function toggleWatchLater() {
       console.log('[後で見る切り替え] メニュー内の保存項目をクリック');
       item.click();
       handlePlaylistDialog('toggle');
-      const panel = document.getElementById(PANEL_ID);
-      if (panel) {
-        schedulePanelResync(panel, [300, 800, 1600, 2500]);
-        scheduleFullReembed(panel);
-      }
+      trackWatchLaterToggle(document.getElementById(PANEL_ID), null);
     })
-    .catch(() => console.log('[後で見る切り替え] メニュー内に保存項目が見つかりません'));
+    .catch(() => {
+      console.log('[後で見る切り替え] メニュー内に保存項目が見つかりません');
+      toastController.update('保存メニューが見つかりませんでした', 'error', 3000);
+    });
   } else {
     console.log('[後で見る切り替え] メニューボタンが見つかりませんでした');
+    toastController.show('保存ボタンが見つかりませんでした', 'error', 3000);
   }
 }
 
@@ -2326,31 +2404,7 @@ async function embedPlaylistDialog(panel, options = {}) {
 
   const container = panel.querySelector('.playlist-dialog-container');
 
-  // === [DEBUG] container の変化を全て記録 ===
-  const debugTag = `[DEBUG container@${Date.now()}]`;
-  const snapshot = (label) => {
-    const fc = container.firstElementChild;
-    console.log(`${debugTag} ${label} | children=${container.children.length} | firstChild=${fc ? fc.tagName + (fc.className ? '.' + fc.className : '') : 'null'} | innerHTML.length=${container.innerHTML.length}`);
-  };
-  snapshot('embedPlaylistDialog 入口');
-  if (panel._debugObserver) panel._debugObserver.disconnect();
-  const debugObserver = new MutationObserver((muts) => {
-    for (const m of muts) {
-      const removedTags = Array.from(m.removedNodes).map(n => n.nodeType === 1 ? n.tagName + (n.className ? '.' + n.className : '') : `#text(${(n.textContent || '').slice(0, 20)})`);
-      const addedTags = Array.from(m.addedNodes).map(n => n.nodeType === 1 ? n.tagName + (n.className ? '.' + n.className : '') : `#text(${(n.textContent || '').slice(0, 20)})`);
-      console.log(`${debugTag} mutation type=${m.type} target=${m.target.tagName || m.target.nodeName}`);
-      if (removedTags.length) console.log(`${debugTag}   removed: [${removedTags.join(', ')}]`);
-      if (addedTags.length) console.log(`${debugTag}   added: [${addedTags.join(', ')}]`);
-      console.log(`${debugTag}   stack:`, new Error().stack.split('\n').slice(2, 7).join('\n'));
-    }
-  });
-  debugObserver.observe(container, { childList: true, subtree: false });
-  panel._debugObserver = debugObserver;
-  // === [DEBUG] ここまで ===
-
-  console.log(`${debugTag} teardownPlaylistPanel 呼び出し前`);
   teardownPlaylistPanel(panel);
-  snapshot('teardownPlaylistPanel 後');
 
   // keepCurrentContent: 既に埋め込み済みのクローンを残したまま、新しいダイアログ取得後に
   // mountDialogClone で原子的に差し替える（r キー後の再 embed で空状態を見せないため）。
@@ -2360,12 +2414,8 @@ async function embedPlaylistDialog(panel, options = {}) {
     && !firstChild.classList.contains('loading')
     && !firstChild.classList.contains('error-message');
   const keepCurrent = !!options.keepCurrentContent && hasMountedClone;
-  console.log(`${debugTag} keepCurrent判定: options.keepCurrentContent=${!!options.keepCurrentContent}, hasMountedClone=${hasMountedClone}, firstChild=${firstChild ? firstChild.tagName + '.' + firstChild.className : 'null'}, classList=[${firstChild ? Array.from(firstChild.classList).join(',') : ''}]`);
   if (!keepCurrent) {
-    console.log(`${debugTag} loading に置き換えます`);
     container.innerHTML = '<div class="loading">プレイリストを読み込み中...</div>';
-  } else {
-    console.log(`${debugTag} keepCurrent=true: 既存クローンを維持`);
   }
 
   // バックグラウンドタブでは処理をスキップ
@@ -2373,6 +2423,8 @@ async function embedPlaylistDialog(panel, options = {}) {
     if (!keepCurrent) {
       container.innerHTML = '<div class="loading">タブがアクティブになったらプレイリストが読み込まれます</div>';
     }
+    // フラグを戻しておかないと、表示時の再呼び出しが冒頭のガードで弾かれる
+    panel._isEmbedding = false;
     document.addEventListener('visibilitychange', function onVisible() {
       if (document.visibilityState === 'visible') {
         document.removeEventListener('visibilitychange', onVisible);
@@ -2384,41 +2436,37 @@ async function embedPlaylistDialog(panel, options = {}) {
 
   console.log('[INFO] プレイリストパネル: ダイアログ埋め込み処理を開始');
 
+  let retryScheduled = false;
   try {
-    console.log(`${debugTag} findAndClickSaveButton 呼び出し前`);
-    snapshot('findAndClickSaveButton 直前');
     const originalDialog = await findAndClickSaveButton();
-    console.log(`${debugTag} findAndClickSaveButton 完了, originalDialog=${originalDialog && originalDialog.tagName}`);
-    snapshot('findAndClickSaveButton 直後');
     mountDialogClone(panel, originalDialog);
-    snapshot('mountDialogClone 直後');
   } catch (err) {
     console.log('[ERROR] プレイリストパネル:', err.message);
-    [...PLAYLIST_DIALOG_SELECTORS, 'ytd-popup-container', 'tp-yt-paper-dialog', 'yt-sheet-vm'].forEach(sel => {
-      const els = document.querySelectorAll(sel);
-      if (els.length > 0) {
-        console.log(`[DEBUG] ヒット (${sel}):`, Array.from(els).map(el => ({
-          tag: el.tagName,
-          visible: el.offsetWidth > 0 && el.offsetHeight > 0,
-          display: window.getComputedStyle(el).display,
-          children: el.children.length
-        })));
-      }
-    });
-    console.log(`${debugTag} catch 分岐: err=${err && err.message}`);
-    snapshot('catch 内');
+    if (settings.debugMode) {
+      [...PLAYLIST_DIALOG_SELECTORS, 'ytd-popup-container', 'tp-yt-paper-dialog', 'yt-sheet-vm'].forEach(sel => {
+        const els = document.querySelectorAll(sel);
+        if (els.length > 0) {
+          console.log(`[DEBUG] ヒット (${sel}):`, Array.from(els).map(el => ({
+            tag: el.tagName,
+            visible: el.offsetWidth > 0 && el.offsetHeight > 0,
+            display: window.getComputedStyle(el).display,
+            children: el.children.length
+          })));
+        }
+      });
+    }
 
     // 前回のクローズ時にダイアログへ残留したインラインスタイル（max-height 等）が
     // 原因でサイズ0のまま開けないことがある。対象候補の style を除去したうえで
     // 1 回だけ自動的に再試行する（動画を連続で切り替えた場合に発生しやすい）。
     const retryCount = options.retryCount || 0;
     if (retryCount < 1) {
-      console.log(`${debugTag} 自動再試行のため対象要素の style を除去`);
       for (const sel of PLAYLIST_DIALOG_SELECTORS) {
         document.querySelectorAll(sel).forEach(el => {
           if (!panel.contains(el)) el.removeAttribute('style');
         });
       }
+      retryScheduled = true;
       panel._isEmbedding = false;
       setTimeout(() => embedPlaylistDialog(panel, { ...options, retryCount: retryCount + 1 }), 500);
       return;
@@ -2430,6 +2478,12 @@ async function embedPlaylistDialog(panel, options = {}) {
     }
   } finally {
     panel._isEmbedding = false;
+    if (!retryScheduled) finishWatchLaterBusy(panel);
+    // 読み込み中に押された r キーを、埋め込み完了（または最終的な失敗）後に1回だけ処理する
+    if (panel._pendingToggle && !retryScheduled && document.contains(panel)) {
+      panel._pendingToggle = false;
+      toggleWatchLater();
+    }
   }
 }
 
@@ -2571,6 +2625,7 @@ browserAPI.storage.sync.get(DEFAULT_SETTINGS).then((result) => {
   interceptShortsLinks();
   initializeShortsRedirect();
   injectQualityEnforcerScript();
+  injectVolumeNormalizerScript();
 
   // #secondary要素の出現を待って即時初期化（最大4秒、タイムアウト時はそのまま実行）
   waitForElement('#secondary', { timeout: 4000 })
@@ -2593,6 +2648,9 @@ browserAPI.storage.onChanged.addListener((changes) => {
   }
   if (changes.highlightEnabled) {
     updateHighlighting();
+  }
+  if (changes.volumeNormalizeEnabled || changes.volumeTargetLufs) {
+    publishVolumeNormalizerSettings();
   }
   if (changes.showPlaylistPanel) {
     if (settings.showPlaylistPanel) {
@@ -2726,66 +2784,69 @@ window.addEventListener('popstate', () => setTimeout(handleUrlChangeForHighlight
 // Toast通知機能
 const toastController = {
   currentToast: null,
-  
+  hideTimer: null,
+
+  icons: {
+    success: '✅',
+    info: 'ℹ️',
+    warning: '⚠️',
+    error: '❌'
+  },
+
+  // 表示中のToastの種類・文言・表示時間を差し替える（pending はアイコンの代わりにスピナーを出す）
+  render: function(toast, message, type, duration) {
+    toast.className = `youtube-unwatched-opener-toast ${type}${toast.classList.contains('show') ? ' show' : ''}`;
+    const icon = toast.querySelector('.toast-icon');
+    icon.textContent = type === 'pending' ? '' : (this.icons[type] || '📱');
+    icon.classList.toggle('toast-spinner', type === 'pending');
+    toast.querySelector('.toast-message').textContent = message;
+
+    clearTimeout(this.hideTimer);
+    this.hideTimer = setTimeout(() => {
+      if (this.currentToast === toast) {
+        this.hide();
+      }
+    }, duration);
+    debugLogController.log(`[Toast] ${type}: ${message}`);
+  },
+
   show: function(message, type = 'info', duration = 3000) {
     // 既存のToastを削除
     if (this.currentToast) {
       this.currentToast.remove();
     }
-    
-    // Toastコンテナを作成
+
     const toast = document.createElement('div');
     toast.id = 'youtube-unwatched-opener-toast';
-    toast.className = `youtube-unwatched-opener-toast ${type}`;
-    
-    // アイコンを設定
-    let icon = '📱';
-    switch (type) {
-      case 'success':
-        icon = '✅';
-        break;
-      case 'info':
-        icon = 'ℹ️';
-        break;
-      case 'warning':
-        icon = '⚠️';
-        break;
-      case 'error':
-        icon = '❌';
-        break;
-    }
-    
-    // Toastの内容を設定
-    toast.innerHTML = `
-      <span class="toast-icon">${icon}</span>
-      <span class="toast-message">${message}</span>
-    `;
-    
-    // ページに追加
+    toast.innerHTML = '<span class="toast-icon"></span><span class="toast-message"></span>';
     document.body.appendChild(toast);
     this.currentToast = toast;
-    
+    this.render(toast, message, type, duration);
+
     // アニメーション表示
     setTimeout(() => {
       toast.classList.add('show');
     }, 10);
-    
-    // 自動削除
-    setTimeout(() => {
-      if (this.currentToast === toast) {
-        this.hide();
-      }
-    }, duration);
-    
-    debugLogController.log(`[Toast] ${type}: ${message}`);
   },
-  
+
+  // 表示中のToastがあれば作り直さずに内容だけ更新する（処理中→完了の切り替えでスライドし直さない）
+  update: function(message, type = 'info', duration = 3000) {
+    // 非表示アニメーション中のものは再利用せず新しく出す
+    if (this.currentToast && document.contains(this.currentToast) && !this.currentToast.dataset.hiding) {
+      this.render(this.currentToast, message, type, duration);
+    } else {
+      this.show(message, type, duration);
+    }
+  },
+
   hide: function() {
     if (this.currentToast) {
-      this.currentToast.classList.remove('show');
+      const toast = this.currentToast;
+      toast.dataset.hiding = 'true';
+      toast.classList.remove('show');
       setTimeout(() => {
-        if (this.currentToast) {
-          this.currentToast.remove();
+        if (this.currentToast === toast) {
+          toast.remove();
           this.currentToast = null;
         }
       }, 300);
@@ -2847,6 +2908,30 @@ function injectQualityEnforcerScript() {
   (document.head || document.documentElement).appendChild(script);
 }
 
+// 再生音量の平滑化（volume-normalizer.js）もプレイヤーの getVolume() 等を参照するため
+// メインワールドに注入する。設定は隔離ワールドとメインワールドで共有されるDOM属性経由で渡す
+function publishVolumeNormalizerSettings() {
+  document.documentElement.setAttribute('data-youtube-unwatched-opener-volume', JSON.stringify({
+    enabled: !!settings.volumeNormalizeEnabled,
+    targetLufs: Number(settings.volumeTargetLufs)
+  }));
+  document.dispatchEvent(new Event('youtube-unwatched-opener:volume-settings'));
+}
+
+function injectVolumeNormalizerScript() {
+  publishVolumeNormalizerSettings();
+  if (document.getElementById('youtube-unwatched-opener-volume-normalizer')) {
+    return;
+  }
+  const script = document.createElement('script');
+  script.id = 'youtube-unwatched-opener-volume-normalizer';
+  script.src = browserAPI.runtime.getURL('volume-normalizer.js');
+  script.onload = function() {
+    this.remove();
+  };
+  (document.head || document.documentElement).appendChild(script);
+}
+
 // 履歴API操作をフック
 const originalPushState = history.pushState;
 const originalReplaceState = history.replaceState;
@@ -2864,6 +2949,16 @@ history.replaceState = function() {
   setTimeout(updatePlaylistPanelForNewVideo, 100);
   setTimeout(handleUrlChangeForHighlighting, 300);
 };
+
+// 上記のフックはコンテンツスクリプトの隔離ワールド内の history を差し替えるだけで、
+// YouTube 本体（メインワールド）の pushState 呼び出しは捕捉できない。
+// SPA 遷移の完了は YouTube 自身が発火する yt-navigate-finish（DOM イベントのため
+// 隔離ワールドからも受信可能）で検知し、bodyのMutationObserver任せの遅延検知を避ける
+document.addEventListener('yt-navigate-finish', () => {
+  recordVideoWatchHistory();
+  updatePlaylistPanelForNewVideo();
+  handleUrlChangeForHighlighting();
+});
 
 // プレイリストパネル表示前のフォーカス保存用
 let savedFocusBeforePlaylistPanel = null;
@@ -3362,12 +3457,31 @@ function startSimpleHighlightObserver() {
     simpleHighlightObserver.disconnect();
   }
   
-  simpleHighlightObserver = new MutationObserver(() => {
+  simpleHighlightObserver = new MutationObserver((mutations) => {
     // DOM変化時（YouTube側が視聴状態バッジ等を更新した可能性がある）は
-    // 処理済みキャッシュを破棄し、次回のapplySimpleHighlightingで再判定させる。
+    // 変化した動画要素の処理済みキャッシュを破棄し、次回のapplySimpleHighlightingで再判定させる。
     // SPA遷移でytd-rich-item-renderer要素が使い回された場合、古いキャッシュが
     // 残ったままだと視聴済みになった動画が未視聴のまま扱われ続けるため。
-    resetSimpleHighlightCache();
+    // 全件を破棄すると無限スクロールのたびに全動画を再判定することになるため、
+    // 変化のあった動画要素（と追加された動画要素）だけを対象にする
+    for (const mutation of mutations) {
+      const target = mutation.target.nodeType === 1 ? mutation.target : mutation.target.parentElement;
+      const item = target && target.closest('ytd-rich-item-renderer');
+      if (item) {
+        delete item.dataset.simpleHighlightProcessed;
+        continue;
+      }
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        if (node.matches('ytd-rich-item-renderer')) {
+          delete node.dataset.simpleHighlightProcessed;
+        } else {
+          node.querySelectorAll('ytd-rich-item-renderer').forEach(el => {
+            delete el.dataset.simpleHighlightProcessed;
+          });
+        }
+      }
+    }
 
     // 500ms後にハイライト処理を実行（連続実行を防ぐ）
     clearTimeout(window.simpleHighlightTimeout);

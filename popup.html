@@ -141,6 +141,34 @@
     </div>
   </div>
 
+  <!-- SECTION: 音量平滑化 -->
+  <div class="section">
+    <div class="section-title">音量平滑化</div>
+
+    <div class="row">
+      <div class="row-label">
+        有効にする
+        <small>動画ごとの音量差を揃える</small>
+      </div>
+      <label class="toggle" style="margin-left:auto">
+        <input type="checkbox" id="volumeNormalizeEnabled">
+        <div class="toggle-track"></div>
+        <div class="toggle-thumb"></div>
+      </label>
+    </div>
+
+    <div class="row">
+      <div class="row-label">
+        目標レベル
+        <small>LUFS (-30–-6、大きいほど大音量)</small>
+      </div>
+      <div class="row-ctrl">
+        <input type="number" id="volumeTargetLufs" min="-30" max="-6" value="-14">
+        <span class="field-error" id="volumeTargetLufsError"></span>
+      </div>
+    </div>
+  </div>
+
   <!-- SECTION: 詳細設定 -->
   <div class="section">
     <div class="section-title">詳細設定</div>

@@ -383,6 +383,42 @@ html[data-theme="dark"] #youtube-unwatched-opener-playlist-panel .panel-header h
   color: #666 !important;
 }
 
+/* r キーでの後で見る切り替え中（サーバー応答待ち） */
+#youtube-unwatched-opener-playlist-panel .watchlater-status.pending {
+  color: #065fd4 !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+#youtube-unwatched-opener-playlist-panel .watchlater-status.pending::before {
+  content: '' !important;
+  width: 10px !important;
+  height: 10px !important;
+  border: 2px solid currentColor !important;
+  border-right-color: transparent !important;
+  border-radius: 50% !important;
+  animation: youtube-unwatched-opener-spin 0.7s linear infinite !important;
+}
+
+#youtube-unwatched-opener-playlist-panel.watchlater-busy .playlist-dialog-container {
+  opacity: 0.5 !important;
+  pointer-events: none !important;
+  transition: opacity 0.15s ease !important;
+}
+
+html[dark] #youtube-unwatched-opener-playlist-panel .watchlater-status.pending,
+html[data-theme="dark"] #youtube-unwatched-opener-playlist-panel .watchlater-status.pending,
+[dark] #youtube-unwatched-opener-playlist-panel .watchlater-status.pending {
+  color: #3ea6ff !important;
+}
+
+@keyframes youtube-unwatched-opener-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 html[dark] #youtube-unwatched-opener-playlist-panel .watchlater-status.added,
 html[data-theme="dark"] #youtube-unwatched-opener-playlist-panel .watchlater-status.added,
 [dark] #youtube-unwatched-opener-playlist-panel .watchlater-status.added {
@@ -553,6 +589,20 @@ tp-yt-iron-overlay-backdrop.opened {
 
 #youtube-unwatched-opener-toast.error {
   background: #f44336 !important;
+}
+
+#youtube-unwatched-opener-toast.pending {
+  background: #323232 !important;
+}
+
+#youtube-unwatched-opener-toast .toast-icon.toast-spinner {
+  width: 14px !important;
+  height: 14px !important;
+  border: 2px solid rgba(255, 255, 255, 0.9) !important;
+  border-right-color: transparent !important;
+  border-radius: 50% !important;
+  box-sizing: border-box !important;
+  animation: youtube-unwatched-opener-spin 0.7s linear infinite !important;
 }
 
 #youtube-unwatched-opener-toast .toast-icon {
