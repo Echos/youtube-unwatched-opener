@@ -9,6 +9,9 @@
 // 信号経路: video → [video.volume打ち消しGain] → [ラウドネス補正Gain] → [コンプレッサー] → [リミッター]
 //                → [スライダー音量Gain] → 出力
 //          video → [K特性近似フィルタ] → Analyser（計測用の分岐、出力には流さない）
+//
+// 補正量は15秒窓・相対ゲート付きの推定で決める。声の合間のBGMだけの区間で利得を上げたり、
+// コンプレッサーで声のピークだけを潰したりすると、BGMが声より持ち上がって聞こえるため
 (function() {
   'use strict';
 
@@ -22,15 +25,24 @@
   const SETTINGS_EVENT = 'youtube-unwatched-opener:volume-settings';
 
   const MEASURE_INTERVAL_MS = 100;
-  const WINDOW_BLOCKS = 30;          // 100ms × 30 = 3秒（EBU R128のshort-term loudnessに相当）
+  // 補正量は長めの窓（15秒）で決め、声の合間やBGMだけの区間で利得が持ち上がらないようにする。
+  // 3秒窓（EBU R128のshort-term相当）は急に大きくなった時に素早く下げる判定にだけ使う
+  const LONG_WINDOW_BLOCKS = 150;    // 100ms × 150 = 15秒
+  const SHORT_WINDOW_BLOCKS = 30;    // 100ms × 30 = 3秒
   const MIN_BLOCKS_FOR_ESTIMATE = 5; // 0.5秒分の計測が貯まるまでは直前の補正量を維持する
   const SILENCE_GATE_LUFS = -60;     // 無音区間で利得を上げ続けないよう、これ以下のブロックは無視する
+  // BS.1770の相対ゲート。窓内の平均より10LU以上小さいブロック（声の合間に残るBGMなど）を推定から外し、
+  // 主に聞かせたい音（多くは声）のレベルに合わせる
+  const RELATIVE_GATE_LU = -10;
+  const SUDDEN_LOUD_LU = 3;          // 3秒窓が15秒窓よりこれ以上大きい時は3秒窓に合わせて素早く下げる
   const MAX_BOOST_DB = 15;
   const MAX_CUT_DB = -25;
   const MAX_VOLUME_COMPENSATION_DB = 30; // video.volume の減衰を打ち消す量の上限
-  const COMPRESSOR_HEADROOM_DB = 4;  // コンプレッサーの閾値を目標ラウドネスからどれだけ下に置くか
-  const TIME_CONSTANT_DOWN = 0.3;    // 急に大きくなった時は素早く下げる
-  const TIME_CONSTANT_UP = 2.0;      // 小さくなった時はゆっくり上げる（ポンピング防止）
+  // コンプレッサーは突発的なピークを抑えるだけにする。閾値を目標ラウドネス付近に置くと
+  // 波高率の大きい声のピークだけが潰され、波高率の小さいBGMが相対的に大きく聞こえる
+  const COMPRESSOR_THRESHOLD_OFFSET_DB = 8;
+  const TIME_CONSTANT_DOWN = 0.5;    // 大きくなった時は早めに下げる
+  const TIME_CONSTANT_UP = 3.0;      // 小さくなった時はゆっくり上げる（ポンピング防止）
   // Analyserはステレオをモノラル平均にダウンミックスするため、BS.1770のチャンネル総和との差(+3dB)を補正する
   const LUFS_OFFSET = -0.691 + 3.01;
 
@@ -92,16 +104,16 @@
     const volumeCompensation = ctx.createGain();
     const gain = ctx.createGain();
 
-    // 補正Gainで持ち上げた後の短いピークを抑える
+    // 補正Gainで持ち上げた後の突発的なピークを軽く抑える
     const compressor = ctx.createDynamicsCompressor();
-    compressor.threshold.value = settings.targetLufs - COMPRESSOR_HEADROOM_DB;
-    compressor.knee.value = 12;
-    compressor.ratio.value = 3;
-    compressor.attack.value = 0.01;
-    compressor.release.value = 0.25;
+    compressor.threshold.value = settings.targetLufs + COMPRESSOR_THRESHOLD_OFFSET_DB;
+    compressor.knee.value = 6;
+    compressor.ratio.value = 2;
+    compressor.attack.value = 0.005;
+    compressor.release.value = 0.2;
 
     const limiter = ctx.createDynamicsCompressor();
-    limiter.threshold.value = -2;
+    limiter.threshold.value = -1;
     limiter.knee.value = 0;
     limiter.ratio.value = 20;
     limiter.attack.value = 0.001;
@@ -188,16 +200,36 @@
     return LUFS_OFFSET + 10 * Math.log10(meanSquare) - gainToDb(chain.video.volume);
   }
 
-  function estimateLoudness(chain) {
-    if (chain.blocks.length < MIN_BLOCKS_FOR_ESTIMATE) {
-      return null;
-    }
-    // 平均はエネルギー領域で取る（dBの単純平均だと小さい区間に引きずられる）
+  // 平均はエネルギー領域で取る（dBの単純平均だと小さい区間に引きずられる）
+  function energyMean(blocks) {
     let energy = 0;
-    for (const lufs of chain.blocks) {
+    for (const lufs of blocks) {
       energy += Math.pow(10, lufs / 10);
     }
-    return 10 * Math.log10(energy / chain.blocks.length);
+    return 10 * Math.log10(energy / blocks.length);
+  }
+
+  // 直近 windowBlocks 分のブロックから相対ゲート付きでラウドネスを求める
+  function gatedLoudness(blocks, windowBlocks) {
+    const recent = blocks.length > windowBlocks ? blocks.slice(-windowBlocks) : blocks;
+    if (recent.length < MIN_BLOCKS_FOR_ESTIMATE) {
+      return null;
+    }
+    const threshold = energyMean(recent) + RELATIVE_GATE_LU;
+    return energyMean(recent.filter(lufs => lufs >= threshold));
+  }
+
+  function estimateLoudness(chain) {
+    const longTerm = gatedLoudness(chain.blocks, LONG_WINDOW_BLOCKS);
+    if (longTerm === null) {
+      return null;
+    }
+    // 小さくなった方向は15秒窓に任せ（BGMだけの区間を持ち上げない）、大きくなった方向だけ3秒窓で素早く追う
+    const shortTerm = gatedLoudness(chain.blocks, SHORT_WINDOW_BLOCKS);
+    if (shortTerm !== null && shortTerm > longTerm + SUDDEN_LOUD_LU) {
+      return shortTerm;
+    }
+    return longTerm;
   }
 
   function updateChain(chain) {
@@ -209,7 +241,7 @@
     const block = measureBlock(chain);
     if (block !== null && block > SILENCE_GATE_LUFS) {
       chain.blocks.push(block);
-      if (chain.blocks.length > WINDOW_BLOCKS) {
+      if (chain.blocks.length > LONG_WINDOW_BLOCKS) {
         chain.blocks.shift();
       }
     }
@@ -224,7 +256,7 @@
     const target = dbToGain(correctionDb);
     // getVolume() はvolumechangeを伴わずに変わることがあるため、念のため毎回同期する
     updateVolumeNodes(chain);
-    chain.compressor.threshold.value = settings.targetLufs - COMPRESSOR_HEADROOM_DB;
+    chain.compressor.threshold.value = settings.targetLufs + COMPRESSOR_THRESHOLD_OFFSET_DB;
     const current = chain.gain.gain.value;
     const timeConstant = target < current ? TIME_CONSTANT_DOWN : TIME_CONSTANT_UP;
     chain.gain.gain.setTargetAtTime(target, audioContext.currentTime, timeConstant);
