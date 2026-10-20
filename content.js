@@ -883,16 +883,6 @@ browserAPI.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-function injectCSS() {
-  if (!document.getElementById('youtube-unwatched-opener-styles')) {
-    const link = document.createElement('link');
-    link.id = 'youtube-unwatched-opener-styles';
-    link.rel = 'stylesheet';
-    link.href = browserAPI.runtime.getURL('highlight.css');
-    document.head.appendChild(link);
-  }
-}
-
 function getVideoStatus(videoElement) {
   // まず履歴チェックを追加（最優先）
   const url = getVideoUrl(videoElement);
@@ -1351,8 +1341,9 @@ function outputYouTubeStructureInfo() {
   console.log('YouTubeUnwatchedOpener.diagnose()');
 }
 
+// highlight.css は manifest.json の content_scripts（document_start）で注入済みのため、
+// ここで <link> を追加し直さない（同じCSSの二重読み込みになる）
 function initializeHighlighting() {
-  injectCSS();
   updateHighlighting();
 
   // ハイライト専用Observerは削除 - メインObserverに統合済み
