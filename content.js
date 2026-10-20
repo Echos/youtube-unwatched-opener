@@ -1627,7 +1627,10 @@ function getWatchLaterItemState(originalDialog) {
     const text = (item.textContent || item.getAttribute('aria-label') || '').toLowerCase();
     if (!text.includes('後で見る') && !text.includes('watch later') && !text.includes('あとで見る')) continue;
 
-    const inner = item.querySelector(
+    // 新UI（toggleable-list-item-view-model）では選択状態は内側の button[role=menuitem] の
+    // aria-pressed / aria-label にあり、途中の yt-list-item-view-model（role=presentation）は
+    // 属性を持たない。状態を持つ要素を最優先で探す
+    const inner = item.querySelector('[aria-pressed], [aria-checked]') || item.querySelector(
       '[role="checkbox"], input[type="checkbox"], tp-yt-paper-checkbox, yt-checkbox-shape, yt-list-item-view-model, button'
     ) || item;
     const ariaChecked = inner.getAttribute('aria-checked') ?? item.getAttribute('aria-checked');
@@ -1658,16 +1661,9 @@ function getWatchLaterItemState(originalDialog) {
 function updateWatchLaterStatusBadge(panel, originalDialog) {
   const badge = panel.querySelector('#playlist-panel-watchlater-status');
   if (!badge) return;
+  // r キーでの切り替え中は「処理中」表示を維持し、反映前の古い状態で上書きしない
+  if (panel._watchLaterBusy) return;
   const state = getWatchLaterItemState(originalDialog);
-  // r キー直後の予測表示中は、YouTube 側の反映前の古い状態で表示を戻さない
-  const optimistic = panel._optimisticBadge;
-  if (optimistic) {
-    if (state === optimistic.expected || Date.now() > optimistic.until) {
-      panel._optimisticBadge = null;
-    } else {
-      return;
-    }
-  }
   if (state === true) {
     badge.textContent = '後で見るに追加済み';
     badge.className = 'watchlater-status added';
@@ -1998,7 +1994,6 @@ async function findAndClickSaveButton() {
 
 // エラー表示と再試行ボタン、フォールバック Observer の設定
 function showPanelError(panel, message) {
-  panel._optimisticBadge = null;
   const badge = panel.querySelector('#playlist-panel-watchlater-status');
   if (badge) {
     badge.textContent = '';
@@ -2123,56 +2118,98 @@ function handlePlaylistDialog(action = 'toggle') {
   });
 }
 
-// r キーでトグルした直後、YouTube の状態反映に時間差があるため
-// 複数タイミングでクローンを再構築して最終状態に追従させる
-// （通常は syncObserver が aria 属性の変化を即座に拾うため、ここは取りこぼし時の保険）
-function schedulePanelResync(panel, delays = [600, 1700]) {
-  if (!panel || !document.contains(panel)) return;
-  for (const ms of delays) {
-    setTimeout(() => {
-      if (!document.contains(panel)) return;
-      const state = playlistPanelState.get(panel);
-      if (state && typeof state.resync === 'function') {
-        try {
-          state.resync();
-        } catch (e) {
-          console.log('[INFO] プレイリストパネル resync 失敗:', e && e.message);
-        }
+// 「後で見る」の追加/削除は YouTube の edit_playlist API で行われ、実測でサーバー応答に
+// 約0.9〜1.5秒かかる（クライアント側では短縮できない）。またパネルが保持するオフスクリーンの
+// ダイアログは、クリック後も YouTube 内部の選択状態・aria 属性が更新されない。
+// そのため、押下直後に「処理中」を表示し、edit_playlist の通信完了を Resource Timing で検知して
+// 結果を表示したうえで、完了後にダイアログを取り直して次の操作に備える。
+// （通信完了前に取り直すと反映前の状態が返り、次の r で削除ではなく追加が再送される）
+const PLAYLIST_EDIT_REQUEST_PATTERN = /\/youtubei\/v1\/browse\/edit_playlist/;
+
+function waitForPlaylistEditRequest(since, timeout = 8000) {
+  return new Promise((resolve) => {
+    const isTarget = (entry) => PLAYLIST_EDIT_REQUEST_PATTERN.test(entry.name) && entry.startTime >= since - 50;
+    let observer = null;
+    let timer = null;
+    const finish = (entry) => {
+      if (observer) observer.disconnect();
+      clearTimeout(timer);
+      if (!entry) {
+        resolve(null);
+        return;
       }
-    }, ms);
+      // responseStatus は Chrome 109+。未対応環境では成否不明として成功扱いにする
+      const status = typeof entry.responseStatus === 'number' ? entry.responseStatus : 0;
+      resolve({ status, ok: status === 0 || (status >= 200 && status < 400), duration: entry.duration });
+    };
+    try {
+      observer = new PerformanceObserver((list) => {
+        const entry = list.getEntries().find(isTarget);
+        if (entry) finish(entry);
+      });
+      observer.observe({ type: 'resource' });
+    } catch (e) {
+      debugLog('[後で見る切り替え] PerformanceObserver を利用できません', e && e.message);
+    }
+    timer = setTimeout(() => finish(null), timeout);
+  });
+}
+
+function getWatchLaterMessages(expected) {
+  if (expected === true) return { pending: '後で見るに追加中…', done: '後で見るに追加しました' };
+  if (expected === false) return { pending: '後で見るから削除中…', done: '後で見るから削除しました' };
+  return { pending: '後で見るを更新中…', done: '後で見るを更新しました' };
+}
+
+function setWatchLaterBusy(panel, busy, pendingText = '') {
+  panel._watchLaterBusy = busy;
+  panel.classList.toggle('watchlater-busy', busy);
+  if (!busy) return;
+  const badge = panel.querySelector('#playlist-panel-watchlater-status');
+  if (badge) {
+    badge.textContent = pendingText;
+    badge.className = 'watchlater-status pending';
   }
 }
 
-// r キーでのトグル後、合成クリックが YouTube 側に反映されなかった場合に限り
-// パネルを完全に再埋め込みする（保存ボタンを再度クリックして新しいダイアログを
-// 取得し直し、実際のサーバー側の状態に合わせる）。
-// 毎回無条件に再埋め込みすると、ダイアログの開閉処理でメインスレッドが塞がるうえ、
-// その間はパネル状態が空になり次の r キーが保存ボタン経由の遅い経路に落ちるため、
-// クリック前の状態から変化していない（=反映されていない）ときだけ実行する。
-// keepCurrentContent により、取得完了までは既存表示を維持しちらつきを防ぐ。
-function scheduleFullReembedIfUnchanged(panel, stateBeforeClick, delay = 1500) {
-  setTimeout(() => {
-    if (!panel || !document.contains(panel)) return;
-    const state = playlistPanelState.get(panel);
-    const current = state && document.contains(state.originalDialog)
-      ? getWatchLaterItemState(state.originalDialog)
-      : null;
-    if (stateBeforeClick !== null && current !== null && current !== stateBeforeClick) {
-      debugLog('[後で見る切り替え] 反映を確認したため再埋め込みは省略');
-      return;
+// r キーでの切り替え後の「処理中」表示と完了処理
+// expected: 切り替え後に期待する状態（true=追加 / false=削除 / null=不明）
+function trackWatchLaterToggle(panel, expected) {
+  const since = performance.now();
+  const messages = getWatchLaterMessages(expected);
+  toastController.show(messages.pending, 'pending', 10000);
+  if (panel) setWatchLaterBusy(panel, true, messages.pending);
+
+  waitForPlaylistEditRequest(since).then((result) => {
+    if (!result) {
+      toastController.update('後で見るの更新を確認できませんでした', 'warning', 3000);
+    } else if (result.ok) {
+      toastController.update(messages.done, 'success', 2000);
+      debugLog(`[後で見る切り替え] edit_playlist 完了 (${Math.round(result.duration)}ms)`);
+    } else {
+      toastController.update(`後で見るの更新に失敗しました（HTTP ${result.status}）`, 'error', 4000);
     }
-    console.log('[後で見る切り替え] 反映を確認できないため、パネルを再埋め込みして最新状態を取得');
-    embedPlaylistDialog(panel, { keepCurrentContent: true });
-  }, delay);
+    if (panel && document.contains(panel)) {
+      // 完了後の取り直しが終わるまで処理中表示を維持し、埋め込み完了時に実際の状態で確定させる
+      embedPlaylistDialog(panel, { keepCurrentContent: true });
+    }
+  });
 }
 
-// バッジを予測値で即時更新する（YouTube 側の aria 反映を待たずに押下へ反応を返す）
-function setWatchLaterBadgeOptimistic(panel, added) {
-  const badge = panel.querySelector('#playlist-panel-watchlater-status');
-  if (!badge) return;
-  panel._optimisticBadge = { expected: added, until: Date.now() + 1500 };
-  badge.textContent = added ? '後で見るに追加済み' : '後で見るに未追加';
-  badge.className = `watchlater-status ${added ? 'added' : 'not-added'}`;
+// 埋め込み完了（または失敗）時に、r キーでの処理中表示を解除して実際の状態を表示する
+function finishWatchLaterBusy(panel) {
+  if (!panel._watchLaterBusy) return;
+  setWatchLaterBusy(panel, false);
+  const state = playlistPanelState.get(panel);
+  if (state && document.contains(state.originalDialog)) {
+    updateWatchLaterStatusBadge(panel, state.originalDialog);
+  } else {
+    const badge = panel.querySelector('#playlist-panel-watchlater-status');
+    if (badge) {
+      badge.textContent = '';
+      badge.className = 'watchlater-status';
+    }
+  }
 }
 
 function toggleWatchLater() {
@@ -2182,11 +2219,13 @@ function toggleWatchLater() {
   const playlistPanel = document.getElementById(PANEL_ID);
   if (playlistPanel) {
     debugLog('[後で見る切り替え] プレイリストパネルを検出');
-    // パネルがダイアログを取得し直している最中は、完了後に1回だけトグルする。
-    // ここで保存ボタン経由の経路に進むと、埋め込み処理の保存ボタン操作と衝突するため
-    if (playlistPanel._isEmbedding) {
-      console.log('[後で見る切り替え] パネル読み込み中のため、完了後にトグルします');
+    // パネルがダイアログを取得し直している最中や、直前の切り替えが完了していない間は、
+    // 完了後に1回だけトグルする。古いダイアログのままクリックすると、YouTube 内部の
+    // 状態が更新されていないため削除のつもりが追加の再送になる
+    if (playlistPanel._isEmbedding || playlistPanel._watchLaterBusy) {
+      console.log('[後で見る切り替え] 処理中のため、完了後にトグルします');
       playlistPanel._pendingToggle = true;
+      toastController.update('前の操作の完了後に切り替えます', 'pending', 10000);
       return;
     }
     const state = playlistPanelState.get(playlistPanel);
@@ -2194,7 +2233,7 @@ function toggleWatchLater() {
       const itemSelectors =
         'ytd-playlist-add-to-option-renderer, yt-list-item-view-model, toggleable-list-item-view-model';
       const items = state.originalDialog.querySelectorAll(itemSelectors);
-      console.log(`[後で見る切り替え] オリジナルダイアログ内の項目数: ${items.length}`);
+      debugLog(`[後で見る切り替え] オリジナルダイアログ内の項目数: ${items.length}`);
       for (const item of items) {
         const text = (item.textContent || item.getAttribute('aria-label') || '').toLowerCase();
         if (text.includes('後で見る') || text.includes('watch later') ||
@@ -2206,12 +2245,7 @@ function toggleWatchLater() {
             item.shadowRoot.querySelector('button, [role="checkbox"], input, tp-yt-paper-checkbox, yt-checkbox-shape');
           const childBtn = item.querySelector('button, [role="checkbox"], input, tp-yt-paper-checkbox, yt-checkbox-shape');
           (shadowBtn || childBtn || item).click();
-          if (stateBeforeClick !== null) {
-            setWatchLaterBadgeOptimistic(playlistPanel, !stateBeforeClick);
-          }
-          // クローンの追従は syncObserver が担い、取りこぼし時のみ遅延 resync で補う
-          schedulePanelResync(playlistPanel);
-          scheduleFullReembedIfUnchanged(playlistPanel, stateBeforeClick);
+          trackWatchLaterToggle(playlistPanel, stateBeforeClick === null ? null : !stateBeforeClick);
           return;
         }
       }
@@ -2229,12 +2263,7 @@ function toggleWatchLater() {
     console.log('[後で見る切り替え] 直接表示の保存ボタンをクリック');
     directSaveBtn.click();
     handlePlaylistDialog('toggle');
-    // 新ダイアログ経由になるため bodyObserver の再 mount 後にも resync が当たるよう長めに刻む
-    const panel = document.getElementById(PANEL_ID);
-    if (panel) {
-      schedulePanelResync(panel, [300, 800, 1600, 2500]);
-      scheduleFullReembedIfUnchanged(panel, null, 1800);
-    }
+    trackWatchLaterToggle(document.getElementById(PANEL_ID), null);
     return;
   }
 
@@ -2243,6 +2272,7 @@ function toggleWatchLater() {
   if (menuBtn) {
     console.log('[後で見る切り替え] メニューボタンをクリック');
     menuBtn.click();
+    toastController.show('後で見るを更新中…', 'pending', 10000);
 
     waitForElement('ytd-menu-service-item-renderer, tp-yt-paper-item, ytd-menu-navigation-item-renderer, yt-list-item-view-model', {
       timeout: 3000,
@@ -2255,15 +2285,15 @@ function toggleWatchLater() {
       console.log('[後で見る切り替え] メニュー内の保存項目をクリック');
       item.click();
       handlePlaylistDialog('toggle');
-      const panel = document.getElementById(PANEL_ID);
-      if (panel) {
-        schedulePanelResync(panel, [300, 800, 1600, 2500]);
-        scheduleFullReembedIfUnchanged(panel, null, 1800);
-      }
+      trackWatchLaterToggle(document.getElementById(PANEL_ID), null);
     })
-    .catch(() => console.log('[後で見る切り替え] メニュー内に保存項目が見つかりません'));
+    .catch(() => {
+      console.log('[後で見る切り替え] メニュー内に保存項目が見つかりません');
+      toastController.update('保存メニューが見つかりませんでした', 'error', 3000);
+    });
   } else {
     console.log('[後で見る切り替え] メニューボタンが見つかりませんでした');
+    toastController.show('保存ボタンが見つかりませんでした', 'error', 3000);
   }
 }
 
@@ -2448,6 +2478,7 @@ async function embedPlaylistDialog(panel, options = {}) {
     }
   } finally {
     panel._isEmbedding = false;
+    if (!retryScheduled) finishWatchLaterBusy(panel);
     // 読み込み中に押された r キーを、埋め込み完了（または最終的な失敗）後に1回だけ処理する
     if (panel._pendingToggle && !retryScheduled && document.contains(panel)) {
       panel._pendingToggle = false;
@@ -2753,66 +2784,69 @@ window.addEventListener('popstate', () => setTimeout(handleUrlChangeForHighlight
 // Toast通知機能
 const toastController = {
   currentToast: null,
-  
+  hideTimer: null,
+
+  icons: {
+    success: '✅',
+    info: 'ℹ️',
+    warning: '⚠️',
+    error: '❌'
+  },
+
+  // 表示中のToastの種類・文言・表示時間を差し替える（pending はアイコンの代わりにスピナーを出す）
+  render: function(toast, message, type, duration) {
+    toast.className = `youtube-unwatched-opener-toast ${type}${toast.classList.contains('show') ? ' show' : ''}`;
+    const icon = toast.querySelector('.toast-icon');
+    icon.textContent = type === 'pending' ? '' : (this.icons[type] || '📱');
+    icon.classList.toggle('toast-spinner', type === 'pending');
+    toast.querySelector('.toast-message').textContent = message;
+
+    clearTimeout(this.hideTimer);
+    this.hideTimer = setTimeout(() => {
+      if (this.currentToast === toast) {
+        this.hide();
+      }
+    }, duration);
+    debugLogController.log(`[Toast] ${type}: ${message}`);
+  },
+
   show: function(message, type = 'info', duration = 3000) {
     // 既存のToastを削除
     if (this.currentToast) {
       this.currentToast.remove();
     }
-    
-    // Toastコンテナを作成
+
     const toast = document.createElement('div');
     toast.id = 'youtube-unwatched-opener-toast';
-    toast.className = `youtube-unwatched-opener-toast ${type}`;
-    
-    // アイコンを設定
-    let icon = '📱';
-    switch (type) {
-      case 'success':
-        icon = '✅';
-        break;
-      case 'info':
-        icon = 'ℹ️';
-        break;
-      case 'warning':
-        icon = '⚠️';
-        break;
-      case 'error':
-        icon = '❌';
-        break;
-    }
-    
-    // Toastの内容を設定
-    toast.innerHTML = `
-      <span class="toast-icon">${icon}</span>
-      <span class="toast-message">${message}</span>
-    `;
-    
-    // ページに追加
+    toast.innerHTML = '<span class="toast-icon"></span><span class="toast-message"></span>';
     document.body.appendChild(toast);
     this.currentToast = toast;
-    
+    this.render(toast, message, type, duration);
+
     // アニメーション表示
     setTimeout(() => {
       toast.classList.add('show');
     }, 10);
-    
-    // 自動削除
-    setTimeout(() => {
-      if (this.currentToast === toast) {
-        this.hide();
-      }
-    }, duration);
-    
-    debugLogController.log(`[Toast] ${type}: ${message}`);
   },
-  
+
+  // 表示中のToastがあれば作り直さずに内容だけ更新する（処理中→完了の切り替えでスライドし直さない）
+  update: function(message, type = 'info', duration = 3000) {
+    // 非表示アニメーション中のものは再利用せず新しく出す
+    if (this.currentToast && document.contains(this.currentToast) && !this.currentToast.dataset.hiding) {
+      this.render(this.currentToast, message, type, duration);
+    } else {
+      this.show(message, type, duration);
+    }
+  },
+
   hide: function() {
     if (this.currentToast) {
-      this.currentToast.classList.remove('show');
+      const toast = this.currentToast;
+      toast.dataset.hiding = 'true';
+      toast.classList.remove('show');
       setTimeout(() => {
-        if (this.currentToast) {
-          this.currentToast.remove();
+        if (this.currentToast === toast) {
+          toast.remove();
           this.currentToast = null;
         }
       }, 300);
