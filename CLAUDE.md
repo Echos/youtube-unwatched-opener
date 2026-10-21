@@ -23,6 +23,8 @@ YouTube登録チャンネルページ（https://www.youtube.com/feed/subscriptio
 
 ### 動画プレイヤー機能
 - 「r」キーで後で見るプレイリストの追加/削除
+- 「b」キーでBGMプレイリスト（名前は設定で変更可、完全一致）の追加/削除
+- プレイリスト操作の処理中・完了を右上トースト・パネルのバッジ・画面中央（設定でOFF可）に表示
 - 右サイドバーにプレイリストパネル表示
 - ショート動画の通常動画プレイヤーでの再生
 - 動画再生時に1440p（あれば）／1080pを優先的に自動選択（4K等への過剰な上振れは避ける）
@@ -61,6 +63,9 @@ const DEFAULT_SETTINGS = {
   highlightEnabled: true,
   highlightToggleKey: 'ctrl+shift+h',
   watchLaterKey: 'r',
+  bgmPlaylistKey: 'b',
+  bgmPlaylistName: 'BGM',
+  centerToastEnabled: true,
   showPlaylistPanel: true,
   debugMode: false,
   historyMaxCount: 10000,
@@ -77,7 +82,7 @@ youtube-smart-speed と統一されたダークテーマデザイン：
 - **アクセントカラー**: `#ff4040`（YouTube赤）
 - **ヘッダー**: ロゴアイコン + タイトル/サブタイトル + ON/OFF メイントグル
 - **ステータスバー**: ドットインジケーター + モノスペーステキスト
-- **セクション構成**: 基本設定 / ハイライト表示 / 後で見る / 関連動画欄 / 音量平滑化 / 詳細設定
+- **セクション構成**: 基本設定 / ハイライト表示 / プレイリスト（後で見るキー・BGMキー・BGMの保存先・中央に処理状況・パネル表示） / 関連動画欄 / 音量平滑化 / 詳細設定
 - **トグル**: `toggle-track` + `toggle-thumb` 構造（Smart Speed 統一）
 - **入力フィールド**: ダークサーフェス（`--surface2`）スタイル
 - **バリデーション**: CSS `:not(:empty)` によるエラー表示制御
@@ -99,6 +104,12 @@ youtube-smart-speed と統一されたダークテーマデザイン：
 - YouTubeネイティブダイアログの直接埋め込み
 - オーバーレイ削除による背景暗転防止
 - 動画変更時の自動更新
+
+### プレイリストのキー操作（togglePlaylist）
+- 操作対象は `{ label, matches(title) }` 形式のターゲットで表す。後で見るは `WATCH_LATER_TARGET`（表示言語ごとの表記のいずれかに一致）、BGMは `createNamedPlaylistTarget(settings.bgmPlaylistName)`（大文字小文字を無視した完全一致。部分一致だと「BGM作業用」等を誤操作するため）
+- プレイリスト名は項目内の最初の `span[role=text]`（新UI）／`#label`（旧UI）から取る。`aria-label`（「BGM, 限定公開, 選択されていません」形式）は名前にカンマを含み得るため補助扱い
+- 流れ: パネルが保持するダイアログの項目をクリック → 処理中表示 → `edit_playlist` の完了を Resource Timing で検知して結果表示 → 完了後にダイアログを取り直して状態確定。処理中に押されたキーは前の操作の完了後に1件ずつ実行し、同じプレイリストへの連打は1回にまとめる
+- 処理状況は `notifyPlaylistStatus()` で右上トースト（`toastController`）と画面中央（`centerToastController`、`centerToastEnabled` 時のみ）に同時に出す。中央表示は全画面再生中も見えるよう `document.fullscreenElement` の中に置き直し、完了・エラーは動画の邪魔にならないよう1.5秒で消す
 
 ### ショート動画変換ロジック
 ```javascript
@@ -159,6 +170,13 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
 - 最小権限の原則（activeTab・storage・tabs のみ）
 
 ## 更新履歴
+
+### 2026-10-21: 「b」キーでBGMプレイリストに追加、処理状況の画面中央表示
+- **機能追加**: 「b」キー（`bgmPlaylistKey`）で、名前が `bgmPlaylistName`（デフォルト「BGM」）のプレイリストに追加/削除する。後で見る専用だった `toggleWatchLater()` を、操作対象を引数で受け取る `togglePlaylist(target)` に一般化した（パネル経由・保存ボタン経由・メニュー経由の3経路とも共通）。指定名のプレイリストが無い場合は「「BGM」プレイリストが見つかりません」と表示する
+- **画面中央の処理状況表示**: 右上トースト・パネルのバッジに加え、画面中央にも「BGMに追加中…」→「BGMに追加しました」を表示（`centerToastEnabled`、デフォルトON）。全画面再生中も見えるよう全画面要素の中に置き直す
+- **処理中に別のキーを押した場合**: 従来は「完了後に1回だけ r を実行」のフラグだったのを、ターゲットのキューに変更（r→b のように別のプレイリストを続けて押しても両方実行される。同じプレイリストの連打は1回にまとめる）
+- **設定画面**: 「後で見る」セクションを「プレイリスト」に改め、BGMキー・BGMの保存先・中央に処理状況の項目を追加。保存先が空のままでは保存しない
+- **検証**: 実機の保存ダイアログ（28件）で、新しい名前取得が全件正しく、「BGM」「Watch later」の検出・状態判定と、似た名前（「後でみさらさす」）や存在しない名前で一致しないことを確認。中央トーストの見た目（処理中・完了・エラー）を実機ページにCSSを再現して確認、設定画面の配置をローカル表示で確認
 
 ### 2026-10-20: 音量平滑化でBGMが声より持ち上がる問題を修正
 - **症状**: 声の合間のBGMが持ち上がり、声よりBGMが大きく聞こえることがあった

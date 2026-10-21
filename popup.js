@@ -5,6 +5,9 @@ const DEFAULT_SETTINGS = {
   highlightEnabled: true,
   highlightToggleKey: 'ctrl+shift+h',
   watchLaterKey: 'r',
+  bgmPlaylistKey: 'b',
+  bgmPlaylistName: 'BGM',
+  centerToastEnabled: true,
   showPlaylistPanel: true,
   debugMode: false,
   historyMaxCount: 10000,
@@ -21,6 +24,9 @@ const el = {
   videoCount:            document.getElementById('videoCount'),
   highlightEnabled:      document.getElementById('highlightEnabled'),
   watchLaterKey:         document.getElementById('watchLaterKey'),
+  bgmPlaylistKey:        document.getElementById('bgmPlaylistKey'),
+  bgmPlaylistName:       document.getElementById('bgmPlaylistName'),
+  centerToastEnabled:    document.getElementById('centerToastEnabled'),
   showPlaylistPanel:     document.getElementById('showPlaylistPanel'),
   debugMode:             document.getElementById('debugMode'),
   historyMaxCount:       document.getElementById('historyMaxCount'),
@@ -33,7 +39,8 @@ const el = {
   toggleLabel:           document.getElementById('toggle-label'),
   videoCountError:      document.getElementById('videoCountError'),
   historyMaxCountError: document.getElementById('historyMaxCountError'),
-  volumeTargetLufsError: document.getElementById('volumeTargetLufsError')
+  volumeTargetLufsError: document.getElementById('volumeTargetLufsError'),
+  bgmPlaylistNameError:  document.getElementById('bgmPlaylistNameError')
 };
 
 // ========== バリデーション ==========
@@ -59,6 +66,9 @@ function getSettingsFromDOM() {
     videoCount:            parseInt(el.videoCount.value),
     highlightEnabled:      el.highlightEnabled.checked,
     watchLaterKey:         el.watchLaterKey.value,
+    bgmPlaylistKey:        el.bgmPlaylistKey.value,
+    bgmPlaylistName:       el.bgmPlaylistName.value.trim(),
+    centerToastEnabled:    el.centerToastEnabled.checked,
     showPlaylistPanel:     el.showPlaylistPanel.checked,
     debugMode:             el.debugMode.checked,
     historyMaxCount:       parseInt(el.historyMaxCount.value),
@@ -75,6 +85,10 @@ function saveSettings() {
     errorEl.textContent = error || '';
     if (error) return;
   }
+  // プレイリスト名は完全一致で探すため、空のまま保存しない
+  const bgmNameError = el.bgmPlaylistName.value.trim() ? '' : 'プレイリスト名を入力してください';
+  el.bgmPlaylistNameError.textContent = bgmNameError;
+  if (bgmNameError) return;
 
   browserAPI.storage.sync.set(getSettingsFromDOM()).then(() => {
     updateStatus('設定を保存しました', 'active');
@@ -92,6 +106,9 @@ function loadSettings() {
     el.videoCount.value              = settings.videoCount;
     el.highlightEnabled.checked      = settings.highlightEnabled;
     el.watchLaterKey.value           = settings.watchLaterKey;
+    el.bgmPlaylistKey.value          = settings.bgmPlaylistKey;
+    el.bgmPlaylistName.value         = settings.bgmPlaylistName;
+    el.centerToastEnabled.checked    = settings.centerToastEnabled;
     el.showPlaylistPanel.checked     = settings.showPlaylistPanel;
     el.debugMode.checked             = settings.debugMode;
     el.historyMaxCount.value         = settings.historyMaxCount;
@@ -145,7 +162,8 @@ el.enabled.addEventListener('change', () => {
 
 // ========== イベント: その他のトグル・セレクト ==========
 [
-  el.shortcutKey, el.highlightEnabled, el.watchLaterKey,
+  el.shortcutKey, el.highlightEnabled, el.watchLaterKey, el.bgmPlaylistKey,
+  el.bgmPlaylistName, el.centerToastEnabled,
   el.showPlaylistPanel, el.debugMode, el.includeShorts, el.hideRelatedVideos,
   el.volumeNormalizeEnabled
 ].forEach(input => input.addEventListener('change', saveSettings));

@@ -5,6 +5,9 @@ const DEFAULT_SETTINGS = {
   highlightEnabled: true,
   highlightToggleKey: 'ctrl+shift+h',
   watchLaterKey: 'r',
+  bgmPlaylistKey: 'b',  // BGMプレイリストの登録・解除キー
+  bgmPlaylistName: 'BGM',  // BGMキーで操作するプレイリスト名（完全一致）
+  centerToastEnabled: true,  // プレイリスト操作の処理状況を画面中央にも表示するか
   showPlaylistPanel: true,
   debugMode: false,  // デバッグモード（詳細ログ出力のON/OFF）
   historyMaxCount: 10000,  // 視聴履歴の最大保持件数
@@ -841,12 +844,15 @@ document.addEventListener('keydown', function(event) {
     toggleHighlighting();
   }
   
-  if (isMatchingShortcut(event, settings.watchLaterKey)) {
+  const playlistTarget = isMatchingShortcut(event, settings.watchLaterKey) ? WATCH_LATER_TARGET
+    : isMatchingShortcut(event, settings.bgmPlaylistKey) ? getBgmPlaylistTarget()
+    : null;
+  if (playlistTarget) {
     event.preventDefault();
     if ((window.location.pathname.startsWith('/watch') || window.location.pathname.startsWith('/shorts')) &&
         window.location.pathname !== '/') {
       savedFocusBeforePlaylistPanel = document.activeElement;
-      toggleWatchLater();
+      togglePlaylist(playlistTarget);
     }
   }
   
@@ -1618,43 +1624,92 @@ function forwardClickToOriginal(event, originalDialog) {
   (shadowBtn || childBtn || originalTarget).click();
 }
 
-// 「後で見る」項目の現在の選択状態を判定する（true=追加済み / false=未追加 / null=判定不可）
-function getWatchLaterItemState(originalDialog) {
-  const items = originalDialog.querySelectorAll(
-    'toggleable-list-item-view-model, yt-list-item-view-model, ytd-playlist-add-to-option-renderer'
-  );
-  for (const item of items) {
-    const text = (item.textContent || item.getAttribute('aria-label') || '').toLowerCase();
-    if (!text.includes('後で見る') && !text.includes('watch later') && !text.includes('あとで見る')) continue;
+// ============================================================
+// プレイリスト項目の特定（後で見る / BGM など）
+// ============================================================
+const PLAYLIST_ITEM_SELECTOR =
+  'toggleable-list-item-view-model, ytd-playlist-add-to-option-renderer, yt-list-item-view-model';
 
-    // 新UI（toggleable-list-item-view-model）では選択状態は内側の button[role=menuitem] の
-    // aria-pressed / aria-label にあり、途中の yt-list-item-view-model（role=presentation）は
-    // 属性を持たない。状態を持つ要素を最優先で探す
-    const inner = item.querySelector('[aria-pressed], [aria-checked]') || item.querySelector(
-      '[role="checkbox"], input[type="checkbox"], tp-yt-paper-checkbox, yt-checkbox-shape, yt-list-item-view-model, button'
-    ) || item;
-    const ariaChecked = inner.getAttribute('aria-checked') ?? item.getAttribute('aria-checked');
-    if (ariaChecked === 'true') return true;
-    if (ariaChecked === 'false') return false;
+// 「後で見る」は表示言語によって名前が変わるため、既知の表記のいずれかに一致すれば対象とする
+const WATCH_LATER_TARGET = {
+  label: '後で見る',
+  matches: (title) => ['watch later', '後で見る', 'あとで見る', 'watchlater'].includes(title.toLowerCase())
+};
 
-    const ariaPressed = inner.getAttribute('aria-pressed') ?? item.getAttribute('aria-pressed');
-    if (ariaPressed === 'true') return true;
-    if (ariaPressed === 'false') return false;
+// BGM など、名前で指定するプレイリスト（部分一致だと「BGM作業用」等を誤って操作するため完全一致）
+function createNamedPlaylistTarget(name) {
+  const normalized = name.trim().toLowerCase();
+  return {
+    label: name.trim(),
+    matches: (title) => title.toLowerCase() === normalized
+  };
+}
 
-    // 新UI（Material 3）は aria-label 内の文言で選択状態を表す
-    // 例: "Watch later, 非公開, 選択されていません" / "..., 選択済み"
-    const ariaLabel = (item.getAttribute('aria-label') || inner.getAttribute('aria-label') || '').toLowerCase();
-    if (ariaLabel.includes('選択されていません') || ariaLabel.includes('not selected') || ariaLabel.includes('unselected')) {
-      return false;
-    }
-    if (ariaLabel.includes('選択済み') || ariaLabel.includes('selected')) return true;
+function getBgmPlaylistTarget() {
+  return createNamedPlaylistTarget(settings.bgmPlaylistName || DEFAULT_SETTINGS.bgmPlaylistName);
+}
 
-    // 旧UI（ytd-playlist-add-to-option-renderer）は checked プロパティを持つ
-    if ('checked' in inner) return !!inner.checked;
+// 項目のプレイリスト名を取得する。新UIでは button 内の最初の span[role=text] が名前、次が公開範囲。
+// aria-label（「BGM, 非公開, 選択済み」形式）は名前にカンマを含み得るため補助に使う
+function getPlaylistItemTitle(item) {
+  const titleEl = item.querySelector('span[role="text"], #label');
+  if (titleEl && titleEl.textContent.trim()) return titleEl.textContent.trim();
+  const labelled = item.querySelector('[aria-pressed], [aria-checked]');
+  const ariaLabel = (labelled && labelled.getAttribute('aria-label')) || item.getAttribute('aria-label') || '';
+  return ariaLabel.split(',')[0].trim();
+}
 
-    return null;
+function findPlaylistItem(dialog, target) {
+  for (const item of dialog.querySelectorAll(PLAYLIST_ITEM_SELECTOR)) {
+    if (target.matches(getPlaylistItemTitle(item))) return item;
   }
   return null;
+}
+
+// 項目をクリックする（Shadow DOM 内のボタン/チェックボックスを優先）
+function clickPlaylistItem(item) {
+  const controlSelector = 'button, [role="checkbox"], input, tp-yt-paper-checkbox, yt-checkbox-shape';
+  const shadowBtn = item.shadowRoot && item.shadowRoot.querySelector(controlSelector);
+  const childBtn = item.querySelector(controlSelector);
+  (shadowBtn || childBtn || item).click();
+}
+
+// 項目の現在の選択状態を判定する（true=追加済み / false=未追加 / null=判定不可）
+function getPlaylistItemState(dialog, target) {
+  const item = findPlaylistItem(dialog, target);
+  if (!item) return null;
+
+  // 新UI（toggleable-list-item-view-model）では選択状態は内側の button[role=menuitem] の
+  // aria-pressed / aria-label にあり、途中の yt-list-item-view-model（role=presentation）は
+  // 属性を持たない。状態を持つ要素を最優先で探す
+  const inner = item.querySelector('[aria-pressed], [aria-checked]') || item.querySelector(
+    '[role="checkbox"], input[type="checkbox"], tp-yt-paper-checkbox, yt-checkbox-shape, yt-list-item-view-model, button'
+  ) || item;
+  const ariaChecked = inner.getAttribute('aria-checked') ?? item.getAttribute('aria-checked');
+  if (ariaChecked === 'true') return true;
+  if (ariaChecked === 'false') return false;
+
+  const ariaPressed = inner.getAttribute('aria-pressed') ?? item.getAttribute('aria-pressed');
+  if (ariaPressed === 'true') return true;
+  if (ariaPressed === 'false') return false;
+
+  // 新UI（Material 3）は aria-label 内の文言で選択状態を表す
+  // 例: "Watch later, 非公開, 選択されていません" / "..., 選択済み"
+  const ariaLabel = (item.getAttribute('aria-label') || inner.getAttribute('aria-label') || '').toLowerCase();
+  if (ariaLabel.includes('選択されていません') || ariaLabel.includes('not selected') || ariaLabel.includes('unselected')) {
+    return false;
+  }
+  if (ariaLabel.includes('選択済み') || ariaLabel.includes('selected')) return true;
+
+  // 旧UI（ytd-playlist-add-to-option-renderer）は checked プロパティを持つ
+  if ('checked' in inner) return !!inner.checked;
+
+  return null;
+}
+
+// 「後で見る」項目の現在の選択状態（パネルヘッダーの表示用）
+function getWatchLaterItemState(originalDialog) {
+  return getPlaylistItemState(originalDialog, WATCH_LATER_TARGET);
 }
 
 // パネルヘッダーの「後で見る」ステータス表示を更新
@@ -1662,7 +1717,7 @@ function updateWatchLaterStatusBadge(panel, originalDialog) {
   const badge = panel.querySelector('#playlist-panel-watchlater-status');
   if (!badge) return;
   // r キーでの切り替え中は「処理中」表示を維持し、反映前の古い状態で上書きしない
-  if (panel._watchLaterBusy) return;
+  if (panel._playlistBusy) return;
   const state = getWatchLaterItemState(originalDialog);
   if (state === true) {
     badge.textContent = '後で見るに追加済み';
@@ -2028,9 +2083,9 @@ function showPanelError(panel, message) {
   panel._fallbackObserver = fallbackObserver;
 }
 
-// 共通のダイアログ操作関数
-function handlePlaylistDialog(action = 'toggle') {
-  console.log(`[ダイアログ操作] アクション: ${action} を開始`);
+// パネルが無い場合の共通ダイアログ操作（保存ボタンで開いたダイアログ内の対象項目を切り替えて閉じる）
+function handlePlaylistDialog(target) {
+  console.log(`[ダイアログ操作] ${target.label} の切り替えを開始`);
   const savedFocus = document.activeElement;
 
   const dialogSelector =
@@ -2038,92 +2093,36 @@ function handlePlaylistDialog(action = 'toggle') {
     'tp-yt-paper-dialog, ' +
     '[role="dialog"], ' +
     '#dialog, ' +
-    '.ytContextualSheetLayoutContentContainer, ' +
-    '#youtube-unwatched-opener-playlist-panel .playlist-dialog-container';
+    '.ytContextualSheetLayoutContentContainer';
 
-  waitForElement(dialogSelector, {
+  return waitForElement(dialogSelector, {
     timeout: 5000,
-    contentCheck: (el) => el.offsetWidth > 0 && el.offsetHeight > 0
+    contentCheck: (el) => el.offsetWidth > 0 && el.offsetHeight > 0 && !!findPlaylistItem(el, target)
   })
   .then(dialog => {
-    console.log(`[ダイアログ操作] ダイアログ発見: <${dialog.tagName}>`);
+    const item = findPlaylistItem(dialog, target);
+    clickPlaylistItem(item);
+    console.log(`[ダイアログ操作] ${target.label} をトグル: <${item.tagName}>`);
 
-    // チェックボックスを探す
-    const checkboxes = dialog.querySelectorAll(
-      'tp-yt-paper-checkbox, ' +
-      'input[type="checkbox"], ' +
-      '[role="checkbox"], ' +
-      'ytd-playlist-add-to-option-renderer, ' +
-      'div[role="option"], ' +
-      'yt-formatted-string, ' +
-      '.yt-formatted-string, ' +
-      'yt-list-item-view-model, ' +
-      'toggleable-list-item-view-model'
-    );
-    console.log(`[ダイアログ操作] チェックボックス/候補要素数: ${checkboxes.length}`);
+    const closeBtn = dialog.querySelector('#close-button, button[aria-label*="Close"], button[aria-label*="閉じる"]');
+    if (closeBtn) closeBtn.click();
+    else document.body.click();
 
-    let targetCheckbox = null;
-
-    for (const cb of checkboxes) {
-      const text = (cb.textContent || cb.getAttribute('aria-label') || '').toLowerCase().trim();
-
-      if (text === '後で見る' || text === 'watch later' || text === 'watchlater' || text === 'wl' || text === 'あとで見る' ||
-          (text.includes('後で見る') && text.length < 20) ||
-          (text.includes('watch later') && text.length < 20)) {
-
-        console.log(`[ダイアログ操作] 候補チェック(一致): "${text}" in <${cb.tagName}>`);
-
-        if (cb.tagName.toLowerCase() === 'ytd-playlist-add-to-option-renderer') {
-          targetCheckbox = cb;
-        } else {
-          const parentRenderer = cb.closest('ytd-playlist-add-to-option-renderer');
-          targetCheckbox = parentRenderer || cb;
-        }
-        break;
-      }
-    }
-
-    if (targetCheckbox) {
-      console.log('[ダイアログ操作] 後で見るチェックボックスを発見');
-
-      if (action === 'toggle') {
-        const clickable = targetCheckbox.querySelector('yt-list-item-view-model') || targetCheckbox.querySelector('#checkbox') || targetCheckbox.querySelector('input') || targetCheckbox;
-        clickable.click();
-        console.log(`[ダイアログ操作] トグル実行: <${clickable.tagName}>`);
-      } else if (action === 'remove') {
-        const isChecked = targetCheckbox.getAttribute('aria-checked') === 'true' ||
-                          targetCheckbox.checked === true ||
-                          targetCheckbox.querySelector('[checked]') !== null;
-        if (isChecked) {
-          targetCheckbox.click();
-          console.log('[ダイアログ操作] 削除実行（チェック解除）');
-        } else {
-          console.log('[ダイアログ操作] 既に未チェックのため何もしません');
-        }
-      }
-
-      // クリック後即時クローズ（500ms待機を廃止）
-      const closeBtn = dialog.querySelector('#close-button, button[aria-label*="Close"], button[aria-label*="閉じる"]');
-      if (closeBtn) closeBtn.click();
-      else document.body.click();
-
-      // フォーカス復帰
-      if (savedFocus && document.contains(savedFocus)) savedFocus.focus();
-    } else {
-      console.log('[ダイアログ操作] ダイアログ内に後で見るチェックボックスが見つかりません');
-    }
+    if (savedFocus && document.contains(savedFocus)) savedFocus.focus();
+    return true;
   })
   .catch(() => {
-    console.log('[ダイアログ操作] ダイアログが見つかりません（タイムアウト）');
+    console.log(`[ダイアログ操作] ダイアログ内に ${target.label} が見つかりません（タイムアウト）`);
+    return false;
   });
 }
 
-// 「後で見る」の追加/削除は YouTube の edit_playlist API で行われ、実測でサーバー応答に
+// プレイリストへの追加/削除は YouTube の edit_playlist API で行われ、実測でサーバー応答に
 // 約0.9〜1.5秒かかる（クライアント側では短縮できない）。またパネルが保持するオフスクリーンの
 // ダイアログは、クリック後も YouTube 内部の選択状態・aria 属性が更新されない。
 // そのため、押下直後に「処理中」を表示し、edit_playlist の通信完了を Resource Timing で検知して
 // 結果を表示したうえで、完了後にダイアログを取り直して次の操作に備える。
-// （通信完了前に取り直すと反映前の状態が返り、次の r で削除ではなく追加が再送される）
+// （通信完了前に取り直すと反映前の状態が返り、次の操作で削除ではなく追加が再送される）
 const PLAYLIST_EDIT_REQUEST_PATTERN = /\/youtubei\/v1\/browse\/edit_playlist/;
 
 function waitForPlaylistEditRequest(since, timeout = 8000) {
@@ -2149,21 +2148,35 @@ function waitForPlaylistEditRequest(since, timeout = 8000) {
       });
       observer.observe({ type: 'resource' });
     } catch (e) {
-      debugLog('[後で見る切り替え] PerformanceObserver を利用できません', e && e.message);
+      debugLog('[プレイリスト切り替え] PerformanceObserver を利用できません', e && e.message);
     }
     timer = setTimeout(() => finish(null), timeout);
   });
 }
 
-function getWatchLaterMessages(expected) {
-  if (expected === true) return { pending: '後で見るに追加中…', done: '後で見るに追加しました' };
-  if (expected === false) return { pending: '後で見るから削除中…', done: '後で見るから削除しました' };
-  return { pending: '後で見るを更新中…', done: '後で見るを更新しました' };
+function getPlaylistMessages(target, expected) {
+  const name = target.label;
+  if (expected === true) return { pending: `${name}に追加中…`, done: `${name}に追加しました` };
+  if (expected === false) return { pending: `${name}から削除中…`, done: `${name}から削除しました` };
+  return { pending: `${name}を更新中…`, done: `${name}を更新しました` };
 }
 
-function setWatchLaterBusy(panel, busy, pendingText = '') {
-  panel._watchLaterBusy = busy;
-  panel.classList.toggle('watchlater-busy', busy);
+// 処理状況を右上のトーストと（設定が有効なら）画面中央の両方に出す
+function notifyPlaylistStatus(message, type, duration, { fresh = false } = {}) {
+  if (fresh) {
+    toastController.show(message, type, duration);
+  } else {
+    toastController.update(message, type, duration);
+  }
+  if (settings.centerToastEnabled) {
+    // 中央は動画に重なるため、完了・エラー表示は短めに消す
+    centerToastController.show(message, type, type === 'pending' ? duration : Math.min(duration, 1500));
+  }
+}
+
+function setPlaylistBusy(panel, busy, pendingText = '') {
+  panel._playlistBusy = busy;
+  panel.classList.toggle('playlist-busy', busy);
   if (!busy) return;
   const badge = panel.querySelector('#playlist-panel-watchlater-status');
   if (badge) {
@@ -2172,22 +2185,22 @@ function setWatchLaterBusy(panel, busy, pendingText = '') {
   }
 }
 
-// r キーでの切り替え後の「処理中」表示と完了処理
+// プレイリストの切り替え後の「処理中」表示と完了処理
 // expected: 切り替え後に期待する状態（true=追加 / false=削除 / null=不明）
-function trackWatchLaterToggle(panel, expected) {
+function trackPlaylistToggle(panel, target, expected) {
   const since = performance.now();
-  const messages = getWatchLaterMessages(expected);
-  toastController.show(messages.pending, 'pending', 10000);
-  if (panel) setWatchLaterBusy(panel, true, messages.pending);
+  const messages = getPlaylistMessages(target, expected);
+  notifyPlaylistStatus(messages.pending, 'pending', 10000, { fresh: true });
+  if (panel) setPlaylistBusy(panel, true, messages.pending);
 
   waitForPlaylistEditRequest(since).then((result) => {
     if (!result) {
-      toastController.update('後で見るの更新を確認できませんでした', 'warning', 3000);
+      notifyPlaylistStatus(`${target.label}の更新を確認できませんでした`, 'warning', 3000);
     } else if (result.ok) {
-      toastController.update(messages.done, 'success', 2000);
-      debugLog(`[後で見る切り替え] edit_playlist 完了 (${Math.round(result.duration)}ms)`);
+      notifyPlaylistStatus(messages.done, 'success', 2000);
+      debugLog(`[プレイリスト切り替え] edit_playlist 完了 (${Math.round(result.duration)}ms)`);
     } else {
-      toastController.update(`後で見るの更新に失敗しました（HTTP ${result.status}）`, 'error', 4000);
+      notifyPlaylistStatus(`${target.label}の更新に失敗しました（HTTP ${result.status}）`, 'error', 4000);
     }
     if (panel && document.contains(panel)) {
       // 完了後の取り直しが終わるまで処理中表示を維持し、埋め込み完了時に実際の状態で確定させる
@@ -2196,10 +2209,10 @@ function trackWatchLaterToggle(panel, expected) {
   });
 }
 
-// 埋め込み完了（または失敗）時に、r キーでの処理中表示を解除して実際の状態を表示する
-function finishWatchLaterBusy(panel) {
-  if (!panel._watchLaterBusy) return;
-  setWatchLaterBusy(panel, false);
+// 埋め込み完了（または失敗）時に、処理中表示を解除して実際の状態を表示する
+function finishPlaylistBusy(panel) {
+  if (!panel._playlistBusy) return;
+  setPlaylistBusy(panel, false);
   const state = playlistPanelState.get(panel);
   if (state && document.contains(state.originalDialog)) {
     updateWatchLaterStatusBadge(panel, state.originalDialog);
@@ -2212,67 +2225,64 @@ function finishWatchLaterBusy(panel) {
   }
 }
 
-function toggleWatchLater() {
-  console.log('[後で見る切り替え] toggleWatchLater関数開始');
+// 処理中に押されたキーを、前の操作の完了後に1件ずつ実行する
+function runNextPendingToggle(panel) {
+  const queue = panel._pendingToggles;
+  if (!queue || queue.length === 0) return;
+  togglePlaylist(queue.shift());
+}
+
+function togglePlaylist(target) {
+  console.log(`[プレイリスト切り替え] ${target.label} の切り替えを開始`);
 
   // 1. プレイリストパネルがある場合はオリジナルダイアログを直接操作
   const playlistPanel = document.getElementById(PANEL_ID);
   if (playlistPanel) {
-    debugLog('[後で見る切り替え] プレイリストパネルを検出');
     // パネルがダイアログを取得し直している最中や、直前の切り替えが完了していない間は、
-    // 完了後に1回だけトグルする。古いダイアログのままクリックすると、YouTube 内部の
-    // 状態が更新されていないため削除のつもりが追加の再送になる
-    if (playlistPanel._isEmbedding || playlistPanel._watchLaterBusy) {
-      console.log('[後で見る切り替え] 処理中のため、完了後にトグルします');
-      playlistPanel._pendingToggle = true;
-      toastController.update('前の操作の完了後に切り替えます', 'pending', 10000);
+    // 完了後にトグルする。古いダイアログのままクリックすると、YouTube 内部の
+    // 状態が更新されていないため削除のつもりが追加の再送になる。
+    // 同じプレイリストへの連打は1回にまとめる
+    if (playlistPanel._isEmbedding || playlistPanel._playlistBusy) {
+      const queue = playlistPanel._pendingToggles || (playlistPanel._pendingToggles = []);
+      if (!queue.some(t => t.label === target.label)) queue.push(target);
+      console.log(`[プレイリスト切り替え] 処理中のため、完了後に ${target.label} を切り替えます`);
+      notifyPlaylistStatus(`前の操作の完了後に${target.label}を切り替えます`, 'pending', 10000);
       return;
     }
     const state = playlistPanelState.get(playlistPanel);
     if (state && state.originalDialog && document.contains(state.originalDialog)) {
-      const itemSelectors =
-        'ytd-playlist-add-to-option-renderer, yt-list-item-view-model, toggleable-list-item-view-model';
-      const items = state.originalDialog.querySelectorAll(itemSelectors);
-      debugLog(`[後で見る切り替え] オリジナルダイアログ内の項目数: ${items.length}`);
-      for (const item of items) {
-        const text = (item.textContent || item.getAttribute('aria-label') || '').toLowerCase();
-        if (text.includes('後で見る') || text.includes('watch later') ||
-            text.includes('watchlater') || text.includes('あとで見る')) {
-          console.log(`[後で見る切り替え] オリジナルダイアログの項目をクリック: ${item.tagName}`);
-          const stateBeforeClick = getWatchLaterItemState(state.originalDialog);
-          // Shadow DOM 内のボタン/チェックボックスを優先してクリック
-          const shadowBtn = item.shadowRoot &&
-            item.shadowRoot.querySelector('button, [role="checkbox"], input, tp-yt-paper-checkbox, yt-checkbox-shape');
-          const childBtn = item.querySelector('button, [role="checkbox"], input, tp-yt-paper-checkbox, yt-checkbox-shape');
-          (shadowBtn || childBtn || item).click();
-          trackWatchLaterToggle(playlistPanel, stateBeforeClick === null ? null : !stateBeforeClick);
-          return;
-        }
+      const item = findPlaylistItem(state.originalDialog, target);
+      if (item) {
+        console.log(`[プレイリスト切り替え] オリジナルダイアログの項目をクリック: ${item.tagName}`);
+        const stateBeforeClick = getPlaylistItemState(state.originalDialog, target);
+        clickPlaylistItem(item);
+        trackPlaylistToggle(playlistPanel, target, stateBeforeClick === null ? null : !stateBeforeClick);
+        return;
       }
-      console.log('[後で見る切り替え] オリジナルダイアログ内に後で見る項目が見つかりませんでした');
-    } else {
-      console.log('[後で見る切り替え] パネルはあるがオリジナルダイアログへの参照がありません');
+      // ダイアログは取得できているのに項目が無い = その名前のプレイリストが存在しない
+      console.log(`[プレイリスト切り替え] ダイアログ内に ${target.label} が見つかりませんでした`);
+      notifyPlaylistStatus(`「${target.label}」プレイリストが見つかりません`, 'error', 3000, { fresh: true });
+      runNextPendingToggle(playlistPanel);
+      return;
     }
-  } else {
-    console.log('[後で見る切り替え] プレイリストパネルが見つかりません');
+    console.log('[プレイリスト切り替え] パネルはあるがオリジナルダイアログへの参照がありません');
   }
 
   // 2. 直接表示されている「保存」ボタンを探す（可視状態のもののみ）
   const directSaveBtn = findDirectSaveButton();
   if (directSaveBtn) {
-    console.log('[後で見る切り替え] 直接表示の保存ボタンをクリック');
+    console.log('[プレイリスト切り替え] 直接表示の保存ボタンをクリック');
     directSaveBtn.click();
-    handlePlaylistDialog('toggle');
-    trackWatchLaterToggle(document.getElementById(PANEL_ID), null);
+    toggleInOpenedDialog(target);
     return;
   }
 
   // 3. メニュー（三点リーダー）内の保存ボタンを探す
   const menuBtn = findPlaylistMenuButton();
   if (menuBtn) {
-    console.log('[後で見る切り替え] メニューボタンをクリック');
+    console.log('[プレイリスト切り替え] メニューボタンをクリック');
     menuBtn.click();
-    toastController.show('後で見るを更新中…', 'pending', 10000);
+    notifyPlaylistStatus(`${target.label}を更新中…`, 'pending', 10000, { fresh: true });
 
     waitForElement('ytd-menu-service-item-renderer, tp-yt-paper-item, ytd-menu-navigation-item-renderer, yt-list-item-view-model', {
       timeout: 3000,
@@ -2282,19 +2292,29 @@ function toggleWatchLater() {
       }
     })
     .then(item => {
-      console.log('[後で見る切り替え] メニュー内の保存項目をクリック');
+      console.log('[プレイリスト切り替え] メニュー内の保存項目をクリック');
       item.click();
-      handlePlaylistDialog('toggle');
-      trackWatchLaterToggle(document.getElementById(PANEL_ID), null);
+      toggleInOpenedDialog(target);
     })
     .catch(() => {
-      console.log('[後で見る切り替え] メニュー内に保存項目が見つかりません');
-      toastController.update('保存メニューが見つかりませんでした', 'error', 3000);
+      console.log('[プレイリスト切り替え] メニュー内に保存項目が見つかりません');
+      notifyPlaylistStatus('保存メニューが見つかりませんでした', 'error', 3000);
     });
   } else {
-    console.log('[後で見る切り替え] メニューボタンが見つかりませんでした');
-    toastController.show('保存ボタンが見つかりませんでした', 'error', 3000);
+    console.log('[プレイリスト切り替え] メニューボタンが見つかりませんでした');
+    notifyPlaylistStatus('保存ボタンが見つかりませんでした', 'error', 3000, { fresh: true });
   }
+}
+
+// パネルを経由せず、保存ボタンで開いたダイアログで切り替える
+function toggleInOpenedDialog(target) {
+  handlePlaylistDialog(target).then((toggled) => {
+    if (toggled) {
+      trackPlaylistToggle(document.getElementById(PANEL_ID), target, null);
+    } else {
+      notifyPlaylistStatus(`「${target.label}」プレイリストが見つかりません`, 'error', 3000, { fresh: true });
+    }
+  });
 }
 
 function createPlaylistPanel() {
@@ -2478,11 +2498,10 @@ async function embedPlaylistDialog(panel, options = {}) {
     }
   } finally {
     panel._isEmbedding = false;
-    if (!retryScheduled) finishWatchLaterBusy(panel);
-    // 読み込み中に押された r キーを、埋め込み完了（または最終的な失敗）後に1回だけ処理する
-    if (panel._pendingToggle && !retryScheduled && document.contains(panel)) {
-      panel._pendingToggle = false;
-      toggleWatchLater();
+    if (!retryScheduled) finishPlaylistBusy(panel);
+    // 読み込み中に押されたキーを、埋め込み完了（または最終的な失敗）後に1件ずつ処理する
+    if (!retryScheduled && document.contains(panel)) {
+      runNextPendingToggle(panel);
     }
   }
 }
@@ -2851,6 +2870,38 @@ const toastController = {
         }
       }, 300);
     }
+  }
+};
+
+// 画面中央の処理状況表示（プレイリスト操作用）
+// 全画面再生中は document.body の子が描画されないため、全画面要素の中に置き直す
+const centerToastController = {
+  element: null,
+  hideTimer: null,
+
+  ensureElement: function() {
+    if (!this.element) {
+      const el = document.createElement('div');
+      el.id = 'youtube-unwatched-opener-center-toast';
+      el.setAttribute('role', 'status');
+      el.innerHTML = '<span class="center-toast-icon"></span><span class="center-toast-message"></span>';
+      this.element = el;
+    }
+    const host = document.fullscreenElement || document.body;
+    if (this.element.parentNode !== host) host.appendChild(this.element);
+    return this.element;
+  },
+
+  show: function(message, type = 'info', duration = 1500) {
+    const el = this.ensureElement();
+    el.className = `${type} show`;
+    el.querySelector('.center-toast-message').textContent = message;
+    clearTimeout(this.hideTimer);
+    this.hideTimer = setTimeout(() => this.hide(), duration);
+  },
+
+  hide: function() {
+    if (this.element) this.element.classList.remove('show');
   }
 };
 
