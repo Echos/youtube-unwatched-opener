@@ -37,7 +37,9 @@
       "mcp__claude-in-chrome__tabs_close_mcp",
       "mcp__claude-in-chrome__tabs_create_mcp",
       "Bash(find /c/Users/echos/AppData/Local/mise/installs/node -maxdepth 2 -name \"node.exe\" 2>/dev/null)",
-      "Bash(\"/c/Users/echos/AppData/Local/mise/installs/node/25.6.1/node.exe\" --check content.js)"
+      "Bash(\"/c/Users/echos/AppData/Local/mise/installs/node/25.6.1/node.exe\" --check content.js)",
+      "Bash(git pull *)",
+      "Bash(git stash *)"
     ],
     "deny": [],
     "ask": []
