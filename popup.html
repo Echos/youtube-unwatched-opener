@@ -96,18 +96,51 @@
     </div>
   </div>
 
-  <!-- SECTION: 後で見る -->
+  <!-- SECTION: プレイリスト -->
   <div class="section">
-    <div class="section-title">後で見る</div>
+    <div class="section-title">プレイリスト</div>
 
     <div class="row">
       <div class="row-label">
-        キー
+        後で見るキー
         <small>登録・解除ショートカット</small>
       </div>
       <div class="row-ctrl">
         <input type="text" id="watchLaterKey" maxlength="1" placeholder="r">
       </div>
+    </div>
+
+    <div class="row">
+      <div class="row-label">
+        BGMキー
+        <small>登録・解除ショートカット</small>
+      </div>
+      <div class="row-ctrl">
+        <input type="text" id="bgmPlaylistKey" maxlength="1" placeholder="b">
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row-label">
+        BGMの保存先
+        <small>プレイリスト名（完全一致）</small>
+      </div>
+      <div class="row-ctrl">
+        <input type="text" id="bgmPlaylistName" maxlength="150" placeholder="BGM">
+        <span class="field-error" id="bgmPlaylistNameError"></span>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row-label">
+        中央に処理状況
+        <small>画面中央にも表示</small>
+      </div>
+      <label class="toggle" style="margin-left:auto">
+        <input type="checkbox" id="centerToastEnabled">
+        <div class="toggle-track"></div>
+        <div class="toggle-thumb"></div>
+      </label>
     </div>
 
     <div class="row">

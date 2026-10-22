@@ -401,7 +401,7 @@ html[data-theme="dark"] #youtube-unwatched-opener-playlist-panel .panel-header h
   animation: youtube-unwatched-opener-spin 0.7s linear infinite !important;
 }
 
-#youtube-unwatched-opener-playlist-panel.watchlater-busy .playlist-dialog-container {
+#youtube-unwatched-opener-playlist-panel.playlist-busy .playlist-dialog-container {
   opacity: 0.5 !important;
   pointer-events: none !important;
   transition: opacity 0.15s ease !important;
@@ -608,6 +608,89 @@ tp-yt-iron-overlay-backdrop.opened {
 #youtube-unwatched-opener-toast .toast-icon {
   font-size: 16px !important;
   flex-shrink: 0 !important;
+}
+
+/* プレイリスト操作の処理状況（画面中央） */
+#youtube-unwatched-opener-center-toast {
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%) scale(0.96) !important;
+  z-index: 2147483647 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  max-width: min(80vw, 520px) !important;
+  padding: 18px 32px !important;
+  border-radius: 12px !important;
+  background: rgba(20, 20, 20, 0.85) !important;
+  color: #fff !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+  font-size: 22px !important;
+  font-weight: 600 !important;
+  line-height: 1.4 !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity 0.15s ease-out, transform 0.15s ease-out !important;
+}
+
+#youtube-unwatched-opener-center-toast.show {
+  opacity: 1 !important;
+  transform: translate(-50%, -50%) scale(1) !important;
+}
+
+#youtube-unwatched-opener-center-toast .center-toast-icon {
+  flex-shrink: 0 !important;
+  width: 22px !important;
+  height: 22px !important;
+  box-sizing: border-box !important;
+  border-radius: 50% !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 15px !important;
+  font-weight: 700 !important;
+}
+
+#youtube-unwatched-opener-center-toast.pending .center-toast-icon {
+  border: 3px solid rgba(255, 255, 255, 0.9) !important;
+  border-right-color: transparent !important;
+  animation: youtube-unwatched-opener-spin 0.7s linear infinite !important;
+}
+
+#youtube-unwatched-opener-center-toast.success .center-toast-icon {
+  background: #4caf50 !important;
+}
+
+#youtube-unwatched-opener-center-toast.success .center-toast-icon::after {
+  content: '' !important;
+  width: 5px !important;
+  height: 10px !important;
+  margin-top: -2px !important;
+  border: solid #fff !important;
+  border-width: 0 2px 2px 0 !important;
+  transform: rotate(45deg) !important;
+}
+
+#youtube-unwatched-opener-center-toast.warning .center-toast-icon,
+#youtube-unwatched-opener-center-toast.error .center-toast-icon {
+  background: #f44336 !important;
+}
+
+#youtube-unwatched-opener-center-toast.warning .center-toast-icon {
+  background: #ff9800 !important;
+}
+
+#youtube-unwatched-opener-center-toast.warning .center-toast-icon::after,
+#youtube-unwatched-opener-center-toast.error .center-toast-icon::after {
+  content: '!' !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #youtube-unwatched-opener-center-toast {
+    transition: none !important;
+  }
 }
 
 #youtube-unwatched-opener-toast .toast-message {
