@@ -8,6 +8,7 @@ const DEFAULT_SETTINGS = {
   bgmPlaylistKey: 'b',  // BGMプレイリストの登録・解除キー
   bgmPlaylistName: 'BGM',  // BGMキーで操作するプレイリスト名（完全一致）
   centerToastEnabled: true,  // プレイリスト操作の処理状況を画面中央にも表示するか
+  autoRemoveWatchLaterAtEnd: true,  // 再生が残り10秒になったら、後で見るに入っている動画を削除するか
   showPlaylistPanel: true,
   debugMode: false,  // デバッグモード（詳細ログ出力のON/OFF）
   historyMaxCount: 10000,  // 視聴履歴の最大保持件数
@@ -2084,7 +2085,9 @@ function showPanelError(panel, message) {
 }
 
 // パネルが無い場合の共通ダイアログ操作（保存ボタンで開いたダイアログ内の対象項目を切り替えて閉じる）
-function handlePlaylistDialog(target) {
+// onlyIfAdded: 追加済みの場合だけクリックする（自動削除用）
+// 戻り値: 'toggled'（クリックした）/ 'skipped'（追加されていないため何もしない）/ 'not-found'
+function handlePlaylistDialog(target, { onlyIfAdded = false } = {}) {
   console.log(`[ダイアログ操作] ${target.label} の切り替えを開始`);
   const savedFocus = document.activeElement;
 
@@ -2100,20 +2103,23 @@ function handlePlaylistDialog(target) {
     contentCheck: (el) => el.offsetWidth > 0 && el.offsetHeight > 0 && !!findPlaylistItem(el, target)
   })
   .then(dialog => {
-    const item = findPlaylistItem(dialog, target);
-    clickPlaylistItem(item);
-    console.log(`[ダイアログ操作] ${target.label} をトグル: <${item.tagName}>`);
+    const skip = onlyIfAdded && getPlaylistItemState(dialog, target) !== true;
+    if (!skip) {
+      const item = findPlaylistItem(dialog, target);
+      clickPlaylistItem(item);
+      console.log(`[ダイアログ操作] ${target.label} をトグル: <${item.tagName}>`);
+    }
 
     const closeBtn = dialog.querySelector('#close-button, button[aria-label*="Close"], button[aria-label*="閉じる"]');
     if (closeBtn) closeBtn.click();
     else document.body.click();
 
     if (savedFocus && document.contains(savedFocus)) savedFocus.focus();
-    return true;
+    return skip ? 'skipped' : 'toggled';
   })
   .catch(() => {
     console.log(`[ダイアログ操作] ダイアログ内に ${target.label} が見つかりません（タイムアウト）`);
-    return false;
+    return 'not-found';
   });
 }
 
@@ -2225,43 +2231,54 @@ function finishPlaylistBusy(panel) {
   }
 }
 
-// 処理中に押されたキーを、前の操作の完了後に1件ずつ実行する
+// 処理中に押されたキー（や終了間際の自動削除）を、前の操作の完了後に1件ずつ実行する
 function runNextPendingToggle(panel) {
   const queue = panel._pendingToggles;
   if (!queue || queue.length === 0) return;
-  togglePlaylist(queue.shift());
+  const next = queue.shift();
+  togglePlaylist(next.target, next.options);
 }
 
-function togglePlaylist(target) {
-  console.log(`[プレイリスト切り替え] ${target.label} の切り替えを開始`);
+// options.auto: 動画終了間際の自動削除。追加済みの場合だけ削除し（未追加なら何もしない）、
+// 「見つからない」等のエラーや待ち合わせの表示も出さない
+function togglePlaylist(target, options = {}) {
+  const auto = !!options.auto;
+  console.log(`[プレイリスト切り替え] ${target.label} の${auto ? '自動削除' : '切り替え'}を開始`);
 
   // 1. プレイリストパネルがある場合はオリジナルダイアログを直接操作
   const playlistPanel = document.getElementById(PANEL_ID);
   if (playlistPanel) {
     // パネルがダイアログを取得し直している最中や、直前の切り替えが完了していない間は、
-    // 完了後にトグルする。古いダイアログのままクリックすると、YouTube 内部の
+    // 完了後に実行する。古いダイアログのままクリックすると、YouTube 内部の
     // 状態が更新されていないため削除のつもりが追加の再送になる。
-    // 同じプレイリストへの連打は1回にまとめる
+    // 同じプレイリストへの同じ種類の操作の連打は1回にまとめる
     if (playlistPanel._isEmbedding || playlistPanel._playlistBusy) {
       const queue = playlistPanel._pendingToggles || (playlistPanel._pendingToggles = []);
-      if (!queue.some(t => t.label === target.label)) queue.push(target);
-      console.log(`[プレイリスト切り替え] 処理中のため、完了後に ${target.label} を切り替えます`);
-      notifyPlaylistStatus(`前の操作の完了後に${target.label}を切り替えます`, 'pending', 10000);
+      if (!queue.some(q => q.target.label === target.label && !!q.options.auto === auto)) {
+        queue.push({ target, options });
+      }
+      console.log(`[プレイリスト切り替え] 処理中のため、完了後に ${target.label} を処理します`);
+      if (!auto) notifyPlaylistStatus(`前の操作の完了後に${target.label}を切り替えます`, 'pending', 10000);
       return;
     }
     const state = playlistPanelState.get(playlistPanel);
     if (state && state.originalDialog && document.contains(state.originalDialog)) {
       const item = findPlaylistItem(state.originalDialog, target);
       if (item) {
-        console.log(`[プレイリスト切り替え] オリジナルダイアログの項目をクリック: ${item.tagName}`);
         const stateBeforeClick = getPlaylistItemState(state.originalDialog, target);
+        if (auto && stateBeforeClick !== true) {
+          debugLog(`[プレイリスト切り替え] ${target.label} に入っていないため自動削除は不要 (state=${stateBeforeClick})`);
+          runNextPendingToggle(playlistPanel);
+          return;
+        }
+        console.log(`[プレイリスト切り替え] オリジナルダイアログの項目をクリック: ${item.tagName}`);
         clickPlaylistItem(item);
         trackPlaylistToggle(playlistPanel, target, stateBeforeClick === null ? null : !stateBeforeClick);
         return;
       }
       // ダイアログは取得できているのに項目が無い = その名前のプレイリストが存在しない
       console.log(`[プレイリスト切り替え] ダイアログ内に ${target.label} が見つかりませんでした`);
-      notifyPlaylistStatus(`「${target.label}」プレイリストが見つかりません`, 'error', 3000, { fresh: true });
+      if (!auto) notifyPlaylistStatus(`「${target.label}」プレイリストが見つかりません`, 'error', 3000, { fresh: true });
       runNextPendingToggle(playlistPanel);
       return;
     }
@@ -2273,7 +2290,7 @@ function togglePlaylist(target) {
   if (directSaveBtn) {
     console.log('[プレイリスト切り替え] 直接表示の保存ボタンをクリック');
     directSaveBtn.click();
-    toggleInOpenedDialog(target);
+    toggleInOpenedDialog(target, options);
     return;
   }
 
@@ -2282,7 +2299,7 @@ function togglePlaylist(target) {
   if (menuBtn) {
     console.log('[プレイリスト切り替え] メニューボタンをクリック');
     menuBtn.click();
-    notifyPlaylistStatus(`${target.label}を更新中…`, 'pending', 10000, { fresh: true });
+    if (!auto) notifyPlaylistStatus(`${target.label}を更新中…`, 'pending', 10000, { fresh: true });
 
     waitForElement('ytd-menu-service-item-renderer, tp-yt-paper-item, ytd-menu-navigation-item-renderer, yt-list-item-view-model', {
       timeout: 3000,
@@ -2294,27 +2311,80 @@ function togglePlaylist(target) {
     .then(item => {
       console.log('[プレイリスト切り替え] メニュー内の保存項目をクリック');
       item.click();
-      toggleInOpenedDialog(target);
+      toggleInOpenedDialog(target, options);
     })
     .catch(() => {
       console.log('[プレイリスト切り替え] メニュー内に保存項目が見つかりません');
-      notifyPlaylistStatus('保存メニューが見つかりませんでした', 'error', 3000);
+      if (!auto) notifyPlaylistStatus('保存メニューが見つかりませんでした', 'error', 3000);
     });
   } else {
     console.log('[プレイリスト切り替え] メニューボタンが見つかりませんでした');
-    notifyPlaylistStatus('保存ボタンが見つかりませんでした', 'error', 3000, { fresh: true });
+    if (!auto) notifyPlaylistStatus('保存ボタンが見つかりませんでした', 'error', 3000, { fresh: true });
   }
 }
 
 // パネルを経由せず、保存ボタンで開いたダイアログで切り替える
-function toggleInOpenedDialog(target) {
-  handlePlaylistDialog(target).then((toggled) => {
-    if (toggled) {
-      trackPlaylistToggle(document.getElementById(PANEL_ID), target, null);
-    } else {
+function toggleInOpenedDialog(target, options = {}) {
+  const auto = !!options.auto;
+  handlePlaylistDialog(target, { onlyIfAdded: auto }).then((result) => {
+    if (result === 'toggled') {
+      trackPlaylistToggle(document.getElementById(PANEL_ID), target, auto ? false : null);
+    } else if (result === 'not-found' && !auto) {
       notifyPlaylistStatus(`「${target.label}」プレイリストが見つかりません`, 'error', 3000, { fresh: true });
     }
   });
+}
+
+// ============================================================
+// 動画終了間際の「後で見る」自動削除
+// ============================================================
+// 再生が残り10秒になった時点で、その動画が後で見るに入っていれば削除する（1動画につき1回）。
+// SPA遷移の直後は URL だけ次の動画に変わり、video 要素には前の動画の再生位置（終端付近）が
+// 残っていることがあるため、そのまま判定すると次の動画を誤って削除しかねない。
+// そこで、URL の動画IDのもとで「終端から十分離れた位置」を一度観測した動画だけを対象にする
+// （新しいメディアは先頭から再生されるため、通常の視聴ではすぐにこの条件を満たす）
+const AUTO_REMOVE_REMAINING_SECONDS = 10;
+const autoRemoveState = { armedVideoId: null, handledVideoId: null };
+
+function isMainVideoElement(el) {
+  return el instanceof HTMLVideoElement && el.classList.contains('html5-main-video');
+}
+
+function isAdShowing(video) {
+  const player = video.closest('.html5-video-player');
+  return !!player && (player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting'));
+}
+
+function handleMainVideoTimeUpdate(event) {
+  const video = event.target;
+  if (!isMainVideoElement(video) || !settings.autoRemoveWatchLaterAtEnd) return;
+  if (window.location.pathname !== '/watch' || isAdShowing(video)) return;
+
+  const videoId = getCurrentVideoId();
+  const duration = video.duration;
+  // ライブ配信（duration が Infinity）と、全体が10秒以下の動画（再生開始直後に削除してしまう）は対象外
+  if (!videoId || !Number.isFinite(duration) || duration <= AUTO_REMOVE_REMAINING_SECONDS) return;
+
+  const remaining = duration - video.currentTime;
+  if (remaining > AUTO_REMOVE_REMAINING_SECONDS) {
+    autoRemoveState.armedVideoId = videoId;
+    return;
+  }
+  if (autoRemoveState.armedVideoId !== videoId || autoRemoveState.handledVideoId === videoId) return;
+
+  autoRemoveState.handledVideoId = videoId;
+  console.log(`[後で見る自動削除] 残り${Math.ceil(remaining)}秒のため、後で見るに入っていれば削除します (${videoId})`);
+  togglePlaylist(WATCH_LATER_TARGET, { auto: true });
+}
+
+function initializeWatchLaterAutoRemoval() {
+  // メディアイベントはバブリングしないが、キャプチャ段階なら document で受け取れる
+  // （YouTube が video 要素を作り直しても付け直しが不要）
+  document.addEventListener('timeupdate', handleMainVideoTimeUpdate, true);
+  // 新しいメディアの読み込み開始時は、前の動画の観測結果を破棄する
+  document.addEventListener('emptied', (event) => {
+    if (isMainVideoElement(event.target)) autoRemoveState.armedVideoId = null;
+  }, true);
 }
 
 function createPlaylistPanel() {
@@ -2641,6 +2711,7 @@ browserAPI.storage.sync.get(DEFAULT_SETTINGS).then((result) => {
   initializeHighlighting();
   initializePersistentSeekBar();
   initializeRelatedVideosBlocker();
+  initializeWatchLaterAutoRemoval();
   interceptShortsLinks();
   initializeShortsRedirect();
   injectQualityEnforcerScript();

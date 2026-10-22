@@ -8,6 +8,7 @@ const DEFAULT_SETTINGS = {
   bgmPlaylistKey: 'b',
   bgmPlaylistName: 'BGM',
   centerToastEnabled: true,
+  autoRemoveWatchLaterAtEnd: true,
   showPlaylistPanel: true,
   debugMode: false,
   historyMaxCount: 10000,
@@ -27,6 +28,7 @@ const el = {
   bgmPlaylistKey:        document.getElementById('bgmPlaylistKey'),
   bgmPlaylistName:       document.getElementById('bgmPlaylistName'),
   centerToastEnabled:    document.getElementById('centerToastEnabled'),
+  autoRemoveWatchLaterAtEnd: document.getElementById('autoRemoveWatchLaterAtEnd'),
   showPlaylistPanel:     document.getElementById('showPlaylistPanel'),
   debugMode:             document.getElementById('debugMode'),
   historyMaxCount:       document.getElementById('historyMaxCount'),
@@ -69,6 +71,7 @@ function getSettingsFromDOM() {
     bgmPlaylistKey:        el.bgmPlaylistKey.value,
     bgmPlaylistName:       el.bgmPlaylistName.value.trim(),
     centerToastEnabled:    el.centerToastEnabled.checked,
+    autoRemoveWatchLaterAtEnd: el.autoRemoveWatchLaterAtEnd.checked,
     showPlaylistPanel:     el.showPlaylistPanel.checked,
     debugMode:             el.debugMode.checked,
     historyMaxCount:       parseInt(el.historyMaxCount.value),
@@ -109,6 +112,7 @@ function loadSettings() {
     el.bgmPlaylistKey.value          = settings.bgmPlaylistKey;
     el.bgmPlaylistName.value         = settings.bgmPlaylistName;
     el.centerToastEnabled.checked    = settings.centerToastEnabled;
+    el.autoRemoveWatchLaterAtEnd.checked = settings.autoRemoveWatchLaterAtEnd;
     el.showPlaylistPanel.checked     = settings.showPlaylistPanel;
     el.debugMode.checked             = settings.debugMode;
     el.historyMaxCount.value         = settings.historyMaxCount;
@@ -163,7 +167,7 @@ el.enabled.addEventListener('change', () => {
 // ========== イベント: その他のトグル・セレクト ==========
 [
   el.shortcutKey, el.highlightEnabled, el.watchLaterKey, el.bgmPlaylistKey,
-  el.bgmPlaylistName, el.centerToastEnabled,
+  el.bgmPlaylistName, el.centerToastEnabled, el.autoRemoveWatchLaterAtEnd,
   el.showPlaylistPanel, el.debugMode, el.includeShorts, el.hideRelatedVideos,
   el.volumeNormalizeEnabled
 ].forEach(input => input.addEventListener('change', saveSettings));
