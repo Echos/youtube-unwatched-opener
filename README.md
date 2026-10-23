@@ -26,7 +26,6 @@ YouTube登録チャンネルページで未視聴動画を効率的に別タブ�
 - **処理状況の表示**：追加/削除の処理中・完了を右上のトーストと画面中央に表示（中央表示は設定でOFF可、全画面再生中も表示）
 - **プレイリストパネル**：右サイドバーにYouTubeネイティブのプレイリストダイアログを表示
 - **ショート動画変換**：ショート動画を自動的に通常の動画プレイヤーで再生
-- **画質自動優先設定**：動画再生時に1440p（あれば）／1080pを自動的に優先選択
 - **音量平滑化**：どの動画でも指定したラウドネス（LUFS、デフォルト -14）に音量を自動調整し、動画ごと・場面ごとの音量差を揃える。YouTubeの音量スライダーはそのまま使える
 
 ### 設定機能
@@ -88,8 +87,6 @@ cd youtube-unwatched-opener
 youtube-unwatched-opener/
 ├── manifest.json        # 拡張機能の設定（Chrome/Firefox両対応）
 ├── browser-polyfill.js  # Chrome/Firefox API抽象化レイヤー
-├── quality-preference.js # 優先画質設定（document_start実行）
-├── quality-enforcer.js  # 優先画質設定のセーフティネット（メインワールド実行）
 ├── volume-normalizer.js # 音量平滑化（Web Audio API、メインワールド実行）
 ├── content.js           # メインロジック
 ├── background.js        # バックグラウンド処理
@@ -162,6 +159,9 @@ __youtubeUnwatchedOpenerVolumeNormalizer.getStatus()
 MIT License
 
 ## 更新履歴
+
+### v2.1.3 (2026-10-23)
+- **画質自動優先設定機能を取り消し**: 動画再生時に1440p／1080pを優先選択する機能（v2.1.0〜v2.1.2）を削除
 
 ### v2.2.0 (2026-10-17)
 - **音量平滑化機能を追加**: Web Audio APIで再生音声のラウドネスを計測し、指定した目標レベル（LUFS）に自動で揃える。コンプレッサー／リミッターで急な大音量も抑える

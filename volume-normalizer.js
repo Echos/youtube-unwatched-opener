@@ -2,7 +2,7 @@
 //
 // .html5-video-player の getVolume() は
 // YouTube本体がメインワールドでDOM要素に生やしたメソッドのため、
-// このファイルも quality-enforcer.js と同様に <script> 注入でメインワールドで実行する。
+// このファイルは <script> 注入でメインワールドで実行する。
 // 設定は content.js が <html data-youtube-unwatched-opener-volume> にJSONで書き込み、
 // 'youtube-unwatched-opener:volume-settings' イベントで変更を通知する。
 //
