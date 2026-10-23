@@ -22,11 +22,6 @@
     },
     {
       "matches": ["https://www.youtube.com/*"],
-      "js": ["quality-preference.js"],
-      "run_at": "document_start"
-    },
-    {
-      "matches": ["https://www.youtube.com/*"],
       "js": ["browser-polyfill.js", "content.js"],
       "run_at": "document_idle"
     }
@@ -45,7 +40,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["quality-enforcer.js", "volume-normalizer.js"],
+      "resources": ["volume-normalizer.js"],
       "matches": ["https://www.youtube.com/*"]
     }
   ]

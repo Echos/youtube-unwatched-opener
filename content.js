@@ -2643,7 +2643,6 @@ browserAPI.storage.sync.get(DEFAULT_SETTINGS).then((result) => {
   initializeRelatedVideosBlocker();
   interceptShortsLinks();
   initializeShortsRedirect();
-  injectQualityEnforcerScript();
   injectVolumeNormalizerScript();
 
   // #secondary要素の出現を待って即時初期化（最大4秒、タイムアウト時はそのまま実行）
@@ -2940,26 +2939,7 @@ function recordVideoWatchHistory() {
   }, 5000); // 5秒後に履歴に追加（実際の視聴開始と判定）
 }
 
-// 動画プレイヤーの優先画質設定（1440pがあれば1440p、なければ1080pを優先）は
-// quality-preference.js（document_start・localStorage操作）と
-// quality-enforcer.js（メインワールドへ注入・プレイヤーAPI直接操作）が担う。
-// #movie_player の getAvailableQualityLevels 等はYouTube本体がメインワールドで
-// DOM要素に直接生やしたプロパティのため、コンテンツスクリプトの隔離ワールドからは
-// 参照できない（isolated world制約）。そのため本体ロジックは main world 注入側に置く。
-function injectQualityEnforcerScript() {
-  if (document.getElementById('youtube-unwatched-opener-quality-enforcer')) {
-    return;
-  }
-  const script = document.createElement('script');
-  script.id = 'youtube-unwatched-opener-quality-enforcer';
-  script.src = browserAPI.runtime.getURL('quality-enforcer.js');
-  script.onload = function() {
-    this.remove(); // スクリプト自体はグローバルスコープで実行継続するため要素は不要
-  };
-  (document.head || document.documentElement).appendChild(script);
-}
-
-// 再生音量の平滑化（volume-normalizer.js）もプレイヤーの getVolume() 等を参照するため
+// 再生音量の平滑化（volume-normalizer.js）はプレイヤーの getVolume() 等を参照するため
 // メインワールドに注入する。設定は隔離ワールドとメインワールドで共有されるDOM属性経由で渡す
 function publishVolumeNormalizerSettings() {
   document.documentElement.setAttribute('data-youtube-unwatched-opener-volume', JSON.stringify({

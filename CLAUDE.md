@@ -27,7 +27,6 @@ YouTube登録チャンネルページ（https://www.youtube.com/feed/subscriptio
 - プレイリスト操作の処理中・完了を右上トースト・パネルのバッジ・画面中央（設定でOFF可）に表示
 - 右サイドバーにプレイリストパネル表示
 - ショート動画の通常動画プレイヤーでの再生
-- 動画再生時に1440p（あれば）／1080pを優先的に自動選択（4K等への過剰な上振れは避ける）
 - 再生音量の平滑化（どの動画でも指定したラウドネスに揃える）
 
 ## 技術仕様
@@ -37,8 +36,6 @@ YouTube登録チャンネルページ（https://www.youtube.com/feed/subscriptio
 youtube-unwatched-opener/
 ├── manifest.json        # 拡張機能設定（Manifest V3、Chrome/Firefox両対応）
 ├── browser-polyfill.js  # Chrome/Firefox API抽象化レイヤー
-├── quality-preference.js # 優先画質設定（document_startで実行、localStorage直接操作）
-├── quality-enforcer.js  # 優先画質設定のセーフティネット（<script>注入でメインワールド実行）
 ├── volume-normalizer.js # 音量平滑化（Web Audio API、<script>注入でメインワールド実行）
 ├── content.js           # メインロジック（未視聴動画検出、ハイライト、ショート動画変換）
 ├── background.js        # バックグラウンド処理（タブ作成）
@@ -125,7 +122,7 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
 - **推定**: 直近15秒をBS.1770の相対ゲート（窓内平均-10LU未満のブロックを除外）付きでエネルギー平均し、補正量を決める。直近3秒の同じ推定値が15秒窓より3LU以上大きい時だけ3秒窓に合わせて素早く下げる。補正は下げる方向を速く（時定数0.5秒）、上げる方向を遅く（3秒）する
   - 3秒窓だけで追従させていた初版では、声の合間（BGMだけの区間）で補正Gainが持ち上がり、BGMが声より大きく聞こえた。長い窓と相対ゲートで声のある区間のレベルに合わせる
 - **コンプレッサー**: 閾値は目標ラウドネス+8dB・レシオ2で、突発的なピークを抑えるだけにする。初版の「目標-4dB・レシオ3」は波高率の大きい声のピークだけを潰し、波高率の小さいBGMが相対的に持ち上がっていた（合成した声＋BGM素材で、声とBGMの差が素材16.4dB→初版10.0dB→現行14.7dB）。リミッターは-1dB
-- **メインワールド実行**: スライダー値の取得に `.html5-video-player` の `getVolume()`（YouTubeがメインワールドで生やしたメソッド）が必要なため、quality-enforcer.jsと同様に `<script src>` で注入する。設定は content.js が `<html data-youtube-unwatched-opener-volume>` にJSONで書き込み、`youtube-unwatched-opener:volume-settings` イベントで通知する
+- **メインワールド実行**: スライダー値の取得に `.html5-video-player` の `getVolume()`（YouTubeがメインワールドで生やしたメソッド）が必要なため、`<script src>` で注入する。設定は content.js が `<html data-youtube-unwatched-opener-volume>` にJSONで書き込み、`youtube-unwatched-opener:volume-settings` イベントで通知する
 - **video.volumeの扱い（Chrome実測）**: `video.volume` / `muted` はMediaElementSourceの出力にも線形に反映される。さらに `video.volume` にはスライダー値に加えYouTube自身のラウドネス正規化による減衰も掛かっている。このため計測値から `video.volume` 分を戻して素材のレベルを求め、出力側では打ち消しGainで `video.volume` を相殺したうえで、スライダー値（`getVolume()/100`）をリミッターの**後段**で掛ける。前段のままだとコンプレッサーにスライダーの音量差が圧縮され、50%にしても約-3dBしか下がらなかった
 - **自動再生ポリシー**: `MediaElementSource` を作ると元の出力経路に戻せず、AudioContextが停止中だと無音になる。そのため `AudioContext.state === 'running'` を確認してから経路を作成し、停止中なら最初のユーザー操作（pointerdown/keydown）で再開する。OFF時は `source → destination` 直結に切り替える
 - **初期推定にplayerResponseのラウドネス値を使わない理由**: `playerConfig.audioConfig.trackAbsoluteLoudnessLkfs` は動画全体の値で、再生位置付近の実測とのズレが動画ごとに一定しないため。0.5秒分の計測が貯まるまでは直前の補正量を維持する
@@ -170,6 +167,10 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
 - 最小権限の原則（activeTab・storage・tabs のみ）
 
 ## 更新履歴
+
+### 2026-10-23: 高解像度（1440p/1080p）の優先設定機能を取り消し
+- **取り消し**: 2026-08-15 に追加した画質の優先設定機能を削除した。`quality-preference.js`（localStorageの `yt-player-quality` 書き込み）と `quality-enforcer.js`（メインワールド注入によるプレイヤーAPI操作）を削除し、`manifest.json` の content_scripts / web_accessible_resources の該当エントリと、`content.js` の `injectQualityEnforcerScript()` を除去
+- 以降の画質関連の更新履歴（2026-08-15の4件）は経緯の記録として残すが、現行コードには存在しない。再導入する場合、YouTubeプレイヤーの内部API（`#movie_player` のメソッド）はメインワールドでしか参照できない点が参考になる
 
 ### 2026-10-21: 「b」キーでBGMプレイリストに追加、処理状況の画面中央表示
 - **機能追加**: 「b」キー（`bgmPlaylistKey`）で、名前が `bgmPlaylistName`（デフォルト「BGM」）のプレイリストに追加/削除する。後で見る専用だった `toggleWatchLater()` を、操作対象を引数で受け取る `togglePlaylist(target)` に一般化した（パネル経由・保存ボタン経由・メニュー経由の3経路とも共通）。指定名のプレイリストが無い場合は「「BGM」プレイリストが見つかりません」と表示する
