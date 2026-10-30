@@ -69,7 +69,9 @@ const DEFAULT_SETTINGS = {
   includeShorts: true,
   hideRelatedVideos: true,
   volumeNormalizeEnabled: true,
-  volumeTargetLufs: -14
+  volumeTargetLufs: -14,
+  volumeVoiceEmphasis: true,
+  volumeOverlayEnabled: false
 };
 ```
 
@@ -79,7 +81,7 @@ youtube-smart-speed と統一されたダークテーマデザイン：
 - **アクセントカラー**: `#ff4040`（YouTube赤）
 - **ヘッダー**: ロゴアイコン + タイトル/サブタイトル + ON/OFF メイントグル
 - **ステータスバー**: ドットインジケーター + モノスペーステキスト
-- **セクション構成**: 基本設定 / ハイライト表示 / プレイリスト（後で見るキー・BGMキー・BGMの保存先・中央に処理状況・パネル表示） / 関連動画欄 / 音量平滑化 / 詳細設定
+- **セクション構成**: 基本設定 / ハイライト表示 / プレイリスト（後で見るキー・BGMキー・BGMの保存先・中央に処理状況・パネル表示） / 関連動画欄 / 音量平滑化（有効・目標レベル・声を強調・調整結果を表示） / 詳細設定
 - **トグル**: `toggle-track` + `toggle-thumb` 構造（Smart Speed 統一）
 - **入力フィールド**: ダークサーフェス（`--surface2`）スタイル
 - **バリデーション**: CSS `:not(:empty)` によるエラー表示制御
@@ -117,13 +119,16 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
 ```
 
 ### 音量平滑化（volume-normalizer.js）
-- **信号経路**: `video → [video.volume打ち消しGain] → [ラウドネス補正Gain] → [コンプレッサー] → [リミッター] → [スライダー音量Gain] → 出力`。計測用に `video → [K特性近似フィルタ] → Analyser` の分岐を別に持つ
+- **信号経路**: `video → [video.volume打ち消しGain] → [声の強調] → [ラウドネス補正Gain] → [コンプレッサー] → [リミッター] → [スライダー音量Gain] → 出力`。補正量を決める計測用に `声の強調の出力 → [K特性近似フィルタ] → Analyser`、可視化用に `リミッター → [K特性近似フィルタ] → Analyser` の分岐を持つ（計測点が打ち消しGainの後なので、計測値から video.volume 分を戻す処理は不要）
 - **計測**: 100msごとにAnalyserの二乗平均からラウドネスを求める。-60 LUFS以下の無音ブロックは無視する
 - **推定**: 直近15秒をBS.1770の相対ゲート（窓内平均-10LU未満のブロックを除外）付きでエネルギー平均し、補正量を決める。直近3秒の同じ推定値が15秒窓より3LU以上大きい時だけ3秒窓に合わせて素早く下げる。補正は下げる方向を速く（時定数0.5秒）、上げる方向を遅く（3秒）する
   - 3秒窓だけで追従させていた初版では、声の合間（BGMだけの区間）で補正Gainが持ち上がり、BGMが声より大きく聞こえた。長い窓と相対ゲートで声のある区間のレベルに合わせる
-- **コンプレッサー**: 閾値は目標ラウドネス+8dB・レシオ2で、突発的なピークを抑えるだけにする。初版の「目標-4dB・レシオ3」は波高率の大きい声のピークだけを潰し、波高率の小さいBGMが相対的に持ち上がっていた（合成した声＋BGM素材で、声とBGMの差が素材16.4dB→初版10.0dB→現行14.7dB）。リミッターは-1dB
+- **コンプレッサー**: 閾値は目標ラウドネス+12dB・レシオ2で、突発的なピークを抑えるだけにする。初版の「目標-4dB・レシオ3」は波高率の大きい声のピークだけを潰し、波高率の小さいBGMが相対的に持ち上がっていた（合成した声＋BGM素材で、声とBGMの差が素材16.4dB→初版10.0dB→+8dB版14.7dB）。リミッターは-1dB
+- **声の強調**（`volumeVoiceEmphasis`、デフォルトON）: 声は中央定位・BGMは左右に広がっていることが多いため、Mid/Side処理でサイド成分を0.6倍（約-4.4dB）にし、2.5kHzのピーキング+3dB（Q0.8）と180Hzのローシェルフ-3dBで声の明瞭度を上げる。M/Sは `L' = L(1+k)/2 + R(1-k)/2` をChannelSplitter/Merger＋Gainで組む。モノラル素材は入力Gainを `channelCount=2, explicit` にして左右同じ信号に広げてから処理する（そのままだと右が無音扱いになり左右が崩れる）。OFF時は k=1・EQ 0dB にして素通しにする
+  - 効果は素材依存で、BGMがモノラル・センター寄りの場合はM/Sが効かず、EQ分（1dB前後）しか声が前に出ない
+- **可視化オーバーレイ**（`volumeOverlayEnabled`、デフォルトOFF）: `#movie_player` の右上に、15秒分の素材レベル（灰）・補正後レベル（青）・目標（赤破線）のグラフと、素材／補正後（どちらも15秒窓・相対ゲート）・補正量・圧縮量（コンプレッサー＋リミッターの `reduction`）を表示する。左上は他の拡張機能（再生速度表示など）と重なるため避けた。一覧ページのホバー再生には出さない。`pointer-events: none` でプレイヤー操作を妨げない。DOMは `createElement`/`textContent` で組む（YouTubeのTrusted Types CSPで `innerHTML` が使えない場合があるため）
 - **メインワールド実行**: スライダー値の取得に `.html5-video-player` の `getVolume()`（YouTubeがメインワールドで生やしたメソッド）が必要なため、`<script src>` で注入する。設定は content.js が `<html data-youtube-unwatched-opener-volume>` にJSONで書き込み、`youtube-unwatched-opener:volume-settings` イベントで通知する
-- **video.volumeの扱い（Chrome実測）**: `video.volume` / `muted` はMediaElementSourceの出力にも線形に反映される。さらに `video.volume` にはスライダー値に加えYouTube自身のラウドネス正規化による減衰も掛かっている。このため計測値から `video.volume` 分を戻して素材のレベルを求め、出力側では打ち消しGainで `video.volume` を相殺したうえで、スライダー値（`getVolume()/100`）をリミッターの**後段**で掛ける。前段のままだとコンプレッサーにスライダーの音量差が圧縮され、50%にしても約-3dBしか下がらなかった
+- **video.volumeの扱い（Chrome実測）**: `video.volume` / `muted` はMediaElementSourceの出力にも線形に反映される。さらに `video.volume` にはスライダー値に加えYouTube自身のラウドネス正規化による減衰も掛かっている。このため打ち消しGainで `video.volume` を相殺し（計測もその後段で行うので素材のレベルになる）、、スライダー値（`getVolume()/100`）をリミッターの**後段**で掛ける。前段のままだとコンプレッサーにスライダーの音量差が圧縮され、50%にしても約-3dBしか下がらなかった
 - **自動再生ポリシー**: `MediaElementSource` を作ると元の出力経路に戻せず、AudioContextが停止中だと無音になる。そのため `AudioContext.state === 'running'` を確認してから経路を作成し、停止中なら最初のユーザー操作（pointerdown/keydown）で再開する。OFF時は `source → destination` 直結に切り替える
 - **初期推定にplayerResponseのラウドネス値を使わない理由**: `playerConfig.audioConfig.trackAbsoluteLoudnessLkfs` は動画全体の値で、再生位置付近の実測とのズレが動画ごとに一定しないため。0.5秒分の計測が貯まるまでは直前の補正量を維持する
 - **未検証**: Firefoxで `video.volume` がMediaElementSourceの出力に反映されるかは未確認（反映されない実装だと、スライダーの減衰が二重に打ち消される方向にずれる）
@@ -167,6 +172,11 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
 - 最小権限の原則（activeTab・storage・tabs のみ）
 
 ## 更新履歴
+
+### 2026-10-31: 音量平滑化の調整結果の可視化オーバーレイと、声とBGMのバランス調整
+- **可視化オーバーレイ**: 設定「調整結果を表示」（`volumeOverlayEnabled`、デフォルトOFF）で、動画プレイヤー右上に素材レベル・補正後レベル・目標のグラフと、補正量・圧縮量の数値を表示。設定変更は再生中にも即時反映
+- **バランス調整**: 「BGMが大きく人の声が小さい」という指摘に対し、声の強調段（M/Sでサイド成分を下げる＋声の帯域のEQ、`volumeVoiceEmphasis`、デフォルトON）を追加し、コンプレッサーの閾値を目標+8dB→+12dBに上げて声のピークを潰しにくくした
+- **検証**: ローカルのテストページ（合成した中央定位の声＋左右に広がるBGM、4秒発声・2秒休止）で、(1) オーバーレイの表示、補正後レベルが目標付近（目標-14に対し-12.7〜-13.4 LUFS）に揃うこと、設定の即時切り替え（非表示・平滑化OFFで除去、直結経路へ戻る）、コンソールエラーなしを確認。(2) OfflineAudioContextで声とBGMの差（K特性、声区間の声 vs BGM全体）を比較: 素材11.3dB / 旧11.2dB / 強調のみ15.7dB / 閾値+12のみ11.3dB / 新16.0dB。今回の素材では効果の大半は声の強調によるもので、閾値変更の効果は小さい（平均圧縮量 1.4dB→0.7dB）。YouTube実機・拡張機能として読み込んでの確認と聴感確認は未実施
 
 ### 2026-10-31: プレイリスト操作の中央表示を動画の中央に移し、サイズを拡大
 - **変更**: 中央の処理状況表示（`centerToastController`）を、ビューポート中央ではなく表示中のプレイヤー要素の中央に出すよう変更。通常表示では動画が画面の左寄りにあるため、画面中央だと動画から外れていた
