@@ -24,7 +24,7 @@ YouTube登録チャンネルページ（https://www.youtube.com/feed/subscriptio
 ### 動画プレイヤー機能
 - 「r」キーで後で見るプレイリストの追加/削除
 - 「b」キーでBGMプレイリスト（名前は設定で変更可、完全一致）の追加/削除
-- プレイリスト操作の処理中・完了を右上トースト・パネルのバッジ・画面中央（設定でOFF可）に表示
+- プレイリスト操作の処理中・完了を右上トースト・パネルのバッジ・動画の中央（設定でOFF可）に表示
 - 右サイドバーにプレイリストパネル表示
 - ショート動画の通常動画プレイヤーでの再生
 - 再生音量の平滑化（どの動画でも指定したラウドネスに揃える）
@@ -106,7 +106,7 @@ youtube-smart-speed と統一されたダークテーマデザイン：
 - 操作対象は `{ label, matches(title) }` 形式のターゲットで表す。後で見るは `WATCH_LATER_TARGET`（表示言語ごとの表記のいずれかに一致）、BGMは `createNamedPlaylistTarget(settings.bgmPlaylistName)`（大文字小文字を無視した完全一致。部分一致だと「BGM作業用」等を誤操作するため）
 - プレイリスト名は項目内の最初の `span[role=text]`（新UI）／`#label`（旧UI）から取る。`aria-label`（「BGM, 限定公開, 選択されていません」形式）は名前にカンマを含み得るため補助扱い
 - 流れ: パネルが保持するダイアログの項目をクリック → 処理中表示 → `edit_playlist` の完了を Resource Timing で検知して結果表示 → 完了後にダイアログを取り直して状態確定。処理中に押されたキーは前の操作の完了後に1件ずつ実行し、同じプレイリストへの連打は1回にまとめる
-- 処理状況は `notifyPlaylistStatus()` で右上トースト（`toastController`）と画面中央（`centerToastController`、`centerToastEnabled` 時のみ）に同時に出す。中央表示は全画面再生中も見えるよう `document.fullscreenElement` の中に置き直し、完了・エラーは動画の邪魔にならないよう1.5秒で消す
+- 処理状況は `notifyPlaylistStatus()` で右上トースト（`toastController`）と動画の中央（`centerToastController`、`centerToastEnabled` 時のみ）に同時に出す。中央表示は表示中のプレイヤー要素（`#movie_player`）の中に `position: absolute` で置くため、通常・シアター・全画面のいずれでも動画の中央に重なる（プレイヤーが無いページでは画面中央、全画面時は `document.fullscreenElement` の中）。完了・エラーは動画の邪魔にならないよう1.5秒で消す
 
 ### ショート動画変換ロジック
 ```javascript
@@ -167,6 +167,11 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
 - 最小権限の原則（activeTab・storage・tabs のみ）
 
 ## 更新履歴
+
+### 2026-10-31: プレイリスト操作の中央表示を動画の中央に移し、サイズを拡大
+- **変更**: 中央の処理状況表示（`centerToastController`）を、ビューポート中央ではなく表示中のプレイヤー要素の中央に出すよう変更。通常表示では動画が画面の左寄りにあるため、画面中央だと動画から外れていた
+- **サイズ**: 文字 22px→32px（太字700）、余白 18/32px→26/48px、アイコン 22px→34px。プレイヤー内では最大幅をプレイヤー幅の90%に収める
+- **検証**: YouTube実機の動画ページに同じCSS・配置処理を注入し、トーストの中心がプレイヤーの中心と一致すること（933,761）と見た目を確認。拡張機能を再読み込みしての r/b キー操作での確認は未実施
 
 ### 2026-10-23: 高解像度（1440p/1080p）の優先設定機能を取り消し
 - **取り消し**: 2026-08-15 に追加した画質の優先設定機能を削除した。`quality-preference.js`（localStorageの `yt-player-quality` 書き込み）と `quality-enforcer.js`（メインワールド注入によるプレイヤーAPI操作）を削除し、`manifest.json` の content_scripts / web_accessible_resources の該当エントリと、`content.js` の `injectQualityEnforcerScript()` を除去

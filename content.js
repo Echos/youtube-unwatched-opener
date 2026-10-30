@@ -2872,8 +2872,9 @@ const toastController = {
   }
 };
 
-// 画面中央の処理状況表示（プレイリスト操作用）
-// 全画面再生中は document.body の子が描画されないため、全画面要素の中に置き直す
+// 動画中央の処理状況表示（プレイリスト操作用）
+// 表示中のプレイヤー要素の中に置き、動画の中央に重ねる。全画面時もプレイヤーは全画面要素内にあるためそのまま見える
+// プレイヤーが見つからない場合は画面中央に出す（全画面中は document.body の子が描画されないため全画面要素の中に置く）
 const centerToastController = {
   element: null,
   hideTimer: null,
@@ -2886,14 +2887,23 @@ const centerToastController = {
       el.innerHTML = '<span class="center-toast-icon"></span><span class="center-toast-message"></span>';
       this.element = el;
     }
-    const host = document.fullscreenElement || document.body;
+    const player = this.findVisiblePlayer();
+    const host = player || document.fullscreenElement || document.body;
+    this.element.classList.toggle('in-player', !!player);
     if (this.element.parentNode !== host) host.appendChild(this.element);
     return this.element;
   },
 
+  findVisiblePlayer: function() {
+    for (const player of document.querySelectorAll('#movie_player, .html5-video-player')) {
+      if (player.checkVisibility() && player.clientWidth > 0) return player;
+    }
+    return null;
+  },
+
   show: function(message, type = 'info', duration = 1500) {
     const el = this.ensureElement();
-    el.className = `${type} show`;
+    el.className = `${type} show${el.classList.contains('in-player') ? ' in-player' : ''}`;
     el.querySelector('.center-toast-message').textContent = message;
     clearTimeout(this.hideTimer);
     this.hideTimer = setTimeout(() => this.hide(), duration);
