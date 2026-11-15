@@ -42,6 +42,9 @@
   // コンプレッサーは突発的なピークを抑えるだけにする。閾値を目標ラウドネス付近に置くと
   // 波高率の大きい声のピークだけが潰され、波高率の小さいBGMが相対的に大きく聞こえる
   const COMPRESSOR_THRESHOLD_OFFSET_DB = 12;
+  // DynamicsCompressorNode.threshold の範囲（dBFS）。範囲外を入れると毎回コンソールに警告が出て、値は切り詰められる
+  const COMPRESSOR_THRESHOLD_MIN_DB = -100;
+  const COMPRESSOR_THRESHOLD_MAX_DB = 0;
   const TIME_CONSTANT_DOWN = 0.5;    // 大きくなった時は早めに下げる
   const TIME_CONSTANT_UP = 3.0;      // 小さくなった時はゆっくり上げる（ポンピング防止）
   // Analyserはステレオをモノラル平均にダウンミックスするため、BS.1770のチャンネル総和との差(+3dB)を補正する
@@ -89,6 +92,24 @@
 
   function gainToDb(gain) {
     return gain > 0 ? 20 * Math.log10(gain) : -Infinity;
+  }
+
+  // 圧縮を始めるレベル（dBFS）。目標ラウドネスより12dB大きいピークから圧縮するが、
+  // 目標が -12 LUFS より大きいと 0dBFS を超えてしまうため、0dBFS（これ以上は表せない）で止める。
+  // ブラウザも範囲外の値を 0 に切り詰めて動いていたので、音は変わらない
+  function compressorThresholdDb(targetLufs) {
+    return Math.min(COMPRESSOR_THRESHOLD_MAX_DB,
+      Math.max(COMPRESSOR_THRESHOLD_MIN_DB, targetLufs + COMPRESSOR_THRESHOLD_OFFSET_DB));
+  }
+
+  // 目標ラウドネスが変わった時だけ設定する（以前は100msごとに設定し直していた）
+  function applyCompressorThreshold(chain) {
+    const threshold = compressorThresholdDb(settings.targetLufs);
+    if (chain.compressorThresholdDb === threshold) {
+      return;
+    }
+    chain.compressor.threshold.value = threshold;
+    chain.compressorThresholdDb = threshold;
   }
 
   function getPlayer(video) {
@@ -187,7 +208,6 @@
 
     // 補正Gainで持ち上げた後の突発的なピークを軽く抑える
     const compressor = ctx.createDynamicsCompressor();
-    compressor.threshold.value = settings.targetLufs + COMPRESSOR_THRESHOLD_OFFSET_DB;
     compressor.knee.value = 6;
     compressor.ratio.value = 2;
     compressor.attack.value = 0.005;
@@ -231,8 +251,10 @@
       inputHistory: [],
       outputHistory: [],
       overlay: null,
-      routedThroughChain: null
+      routedThroughChain: null,
+      compressorThresholdDb: null
     };
+    applyCompressorThreshold(chain);
 
     // 動画が切り替わったら前の動画の計測値を捨てる
     // （playerResponseの trackAbsoluteLoudnessLkfs は実測とのズレが動画ごとに一定でないため初期推定には使わない）
@@ -364,7 +386,6 @@
     const target = dbToGain(correctionDb);
     // getVolume() はvolumechangeを伴わずに変わることがあるため、念のため毎回同期する
     updateVolumeNodes(chain);
-    chain.compressor.threshold.value = settings.targetLufs + COMPRESSOR_THRESHOLD_OFFSET_DB;
     const current = chain.gain.gain.value;
     const timeConstant = target < current ? TIME_CONSTANT_DOWN : TIME_CONSTANT_UP;
     chain.gain.gain.setTargetAtTime(target, audioContext.currentTime, timeConstant);
@@ -581,6 +602,7 @@
     for (const chain of chains.values()) {
       if (chain) {
         applyRouting(chain);
+        applyCompressorThreshold(chain);
         chain.voiceEmphasis.apply(settings.voiceEmphasis);
         updateOverlay(chain);
       }
@@ -606,6 +628,7 @@
         gainDb: gainToDb(chain.gain.gain.value),
         outputLufs: gatedLoudness(chain.outputBlocks, LONG_WINDOW_BLOCKS),
         reductionDb: chain.compressor.reduction + chain.limiter.reduction,
+        compressorThresholdDb: chain.compressorThresholdDb,
         routedThroughChain: chain.routedThroughChain
       }))
     })
