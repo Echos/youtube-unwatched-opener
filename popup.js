@@ -13,6 +13,7 @@ const DEFAULT_SETTINGS = {
   historyMaxCount: 10000,
   includeShorts: true,
   hideRelatedVideos: true,
+  highQualityEnabled: false,
   volumeNormalizeEnabled: true,
   volumeTargetLufs: -14
 };
@@ -32,6 +33,7 @@ const el = {
   historyMaxCount:       document.getElementById('historyMaxCount'),
   includeShorts:         document.getElementById('includeShorts'),
   hideRelatedVideos:     document.getElementById('hideRelatedVideos'),
+  highQualityEnabled:    document.getElementById('highQualityEnabled'),
   volumeNormalizeEnabled: document.getElementById('volumeNormalizeEnabled'),
   volumeTargetLufs:      document.getElementById('volumeTargetLufs'),
   statusDot:             document.getElementById('status-dot'),
@@ -74,6 +76,7 @@ function getSettingsFromDOM() {
     historyMaxCount:       parseInt(el.historyMaxCount.value),
     includeShorts:         el.includeShorts.checked,
     hideRelatedVideos:     el.hideRelatedVideos.checked,
+    highQualityEnabled:    el.highQualityEnabled.checked,
     volumeNormalizeEnabled: el.volumeNormalizeEnabled.checked,
     volumeTargetLufs:      parseInt(el.volumeTargetLufs.value)
   };
@@ -114,6 +117,7 @@ function loadSettings() {
     el.historyMaxCount.value         = settings.historyMaxCount;
     el.includeShorts.checked         = settings.includeShorts;
     el.hideRelatedVideos.checked     = settings.hideRelatedVideos;
+    el.highQualityEnabled.checked    = settings.highQualityEnabled;
     el.volumeNormalizeEnabled.checked = settings.volumeNormalizeEnabled;
     el.volumeTargetLufs.value        = settings.volumeTargetLufs;
 
@@ -165,7 +169,7 @@ el.enabled.addEventListener('change', () => {
   el.shortcutKey, el.highlightEnabled, el.watchLaterKey, el.bgmPlaylistKey,
   el.bgmPlaylistName, el.centerToastEnabled,
   el.showPlaylistPanel, el.debugMode, el.includeShorts, el.hideRelatedVideos,
-  el.volumeNormalizeEnabled
+  el.highQualityEnabled, el.volumeNormalizeEnabled
 ].forEach(input => input.addEventListener('change', saveSettings));
 
 // ========== イベント: 数値入力 ==========
