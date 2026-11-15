@@ -31,7 +31,7 @@ function addToPlaylistResponse(contains, videoId) {
   };
 }
 
-function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { enabled: true, percent: 90, mode: 'crossing' }, editStatus = 200, search = '?v=vid1', playlist = null, answerReady = true } = {}) {
+function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { enabled: true, percent: 90, mode: 'crossing' }, editStatus = 200, search = '?v=vid1', playlist = null, answerReady = true, goMode = null, syncAfterChecks = 2 } = {}) {
   const listeners = {};
   const results = [];
   const requests = [];
@@ -79,7 +79,9 @@ function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { 
         results.push(detail);
         // content.js の代わりに、順番待ちが無い時と同じくその場で合図を返す
         if (detail.type === 'ready' && answerReady) {
-          document.dispatchEvent({ type: 'youtube-unwatched-opener:watch-later-auto-remove-go', detail: detail.requestId });
+          // goMode 省略時は以前の形（requestId だけの文字列）で返し、互換性も確かめる
+          const goDetail = goMode ? JSON.stringify({ requestId: detail.requestId, mode: goMode }) : detail.requestId;
+          document.dispatchEvent({ type: 'youtube-unwatched-opener:watch-later-auto-remove-go', detail: goDetail });
         }
       }
       for (const fn of [...(listeners[event.type] || [])]) fn(event);
@@ -95,13 +97,19 @@ function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { 
     SESSION_INDEX: 0
   };
 
+  // サーバーへの反映の遅れ: 削除のあと syncAfterChecks 回目の確認までは「追加済み」を返す
+  let removed = false;
+  let checksAfterRemoval = 0;
   async function fetch(url, init) {
     const body = JSON.parse(init.body);
     requests.push({ url, headers: init.headers, body });
     if (url.includes('playlist/get_add_to_playlist')) {
-      return { ok: true, status: 200, json: async () => addToPlaylistResponse(inWatchLater ? 'ALL' : 'NONE', body.videoIds[0]) };
+      let contained = inWatchLater;
+      if (removed) contained = ++checksAfterRemoval < syncAfterChecks;
+      return { ok: true, status: 200, json: async () => addToPlaylistResponse(contained ? 'ALL' : 'NONE', body.videoIds[0]) };
     }
     if (url.includes('browse/edit_playlist')) {
+      if (editStatus === 200) removed = true;
       return { ok: editStatus === 200, status: editStatus, json: async () => ({ status: editStatus === 200 ? 'STATUS_SUCCEEDED' : undefined }) };
     }
     throw new Error(`unexpected ${url}`);
@@ -142,7 +150,7 @@ function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { 
     player,
     results,
     // 結果の要約（ready: 合図待ち、result: 削除の結果）
-    summary: () => results.map(r => r.type === 'ready' ? 'ready' : `${r.result}:${r.status}`),
+    summary: () => results.map(r => (r.type === 'ready' || r.type === 'synced') ? r.type : `${r.result}:${r.status}`),
     answerGo(index = 0) {
       const ready = results.filter(r => r.type === 'ready')[index];
       document.dispatchEvent({ type: 'youtube-unwatched-opener:watch-later-auto-remove-go', detail: ready.requestId });
@@ -340,4 +348,36 @@ test('後で見るに入っていなければ合図待ちも送らない', async
   env.play(100);
   await env.flush();
   assert.deepEqual(env.summary(), []);
+});
+
+test('content.js がパネルの保存ダイアログで外した時（mode: page）は edit_playlist を送らない', async () => {
+  const env = createEnvironment({ goMode: 'page', search: '?v=vid1&list=WL', playlist: ['vid1', 'vid2'] });
+  env.play(100);
+  await env.flush();
+  assert.deepEqual(env.requests.map(r => r.url.split('?')[0]), ['/youtubei/v1/playlist/get_add_to_playlist']);
+  assert.deepEqual(env.summary(), ['ready']);
+  // 後で見るのリストの続きの再生の見張りは同じく行う
+  env.player.state = 0;
+  env.fire('ended');
+  env.runTimers();
+  assert.equal(env.player.nextVideoCalls, 1);
+});
+
+test('内部 API で外したら、サーバーに反映されるまで確かめてから synced を知らせる', async () => {
+  const env = createEnvironment({ goMode: 'api', syncAfterChecks: 3 });
+  env.play(100);
+  await env.flush();
+  assert.deepEqual(env.summary(), ['ready', 'removed:200']);
+  for (let i = 0; i < 2; i++) { // 1秒ごとの確認。2回目までは反映前
+    env.runTimers();
+    await env.flush();
+    assert.deepEqual(env.summary(), ['ready', 'removed:200'], `${i + 1}回目はまだ反映前`);
+  }
+  env.runTimers();
+  await env.flush();
+  assert.deepEqual(env.summary(), ['ready', 'removed:200', 'synced']);
+  assert.equal(env.results.at(-1).videoId, 'vid1');
+  env.runTimers();
+  await env.flush();
+  assert.equal(env.requests.filter(r => r.url.includes('get_add_to_playlist')).length, 4, '反映を確かめたら確認をやめる');
 });

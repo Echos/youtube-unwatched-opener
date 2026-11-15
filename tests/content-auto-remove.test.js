@@ -107,7 +107,8 @@ function loadContentScript() {
     sendFromMainWorld(detail) {
       document.dispatchEvent({ type: READY_EVENT, detail: JSON.stringify(detail) });
     },
-    goSignals: () => dispatched.filter(e => e.type === GO_EVENT).map(e => e.detail),
+    goSignals: () => dispatched.filter(e => e.type === GO_EVENT).map(e => JSON.parse(e.detail).requestId),
+    goModes: () => dispatched.filter(e => e.type === GO_EVENT).map(e => JSON.parse(e.detail).mode),
     flush: () => new Promise(resolve => setImmediate(resolve))
   };
 }
@@ -216,4 +217,75 @@ test('別の動画に移ってから順番が来た場合は、今の動画の�
   env.sendFromMainWorld({ type: 'ready', videoId: 'vid1', requestId: 'vid1:1' });
   assert.ok(!env.calls.some(c => c[0] === 'busy'));
   assert.deepEqual(env.goSignals(), ['vid1:1']);
+});
+
+// パネルが保存ダイアログを持ち、後で見るが「追加済み」の状態にする
+function attachDialog(env, panel, { added = true } = {}) {
+  env.context.__panel = panel;
+  env.context.__added = added;
+  env.run(`
+    var __clicked = [];
+    playlistPanelState.set(__panel, { originalDialog: { id: 'dialog' } });
+    findPlaylistItem = (dialog, target) => (target === WATCH_LATER_TARGET ? { id: 'wl-item' } : null);
+    getPlaylistItemState = () => __added;
+    clickPlaylistItem = (item) => __clicked.push(item.id);
+  `);
+}
+
+test('パネルが保存ダイアログを持っていれば、r キーと同じくダイアログの項目をクリックして外し、パネルを取り直す', async () => {
+  // r キー（パネル経由）で外した時
+  const r = loadContentScript();
+  const rPanel = makePanel();
+  r.state.panel = rPanel;
+  attachDialog(r, rPanel);
+  r.run(`waitForPlaylistEditRequest = () => Promise.resolve({ ok: true, status: 200, duration: 900 });`);
+  r.run('togglePlaylist(WATCH_LATER_TARGET)');
+  await r.flush();
+
+  // 90%で自動で外した時
+  const auto = loadContentScript();
+  const panel = makePanel();
+  auto.state.panel = panel;
+  attachDialog(auto, panel);
+  auto.run(`waitForPlaylistEditRequest = () => Promise.resolve({ ok: true, status: 200, duration: 900 });`);
+  auto.sendFromMainWorld({ type: 'ready', videoId: 'vid1', requestId: 'vid1:1' });
+  await auto.flush();
+
+  assert.deepEqual(auto.run('__clicked'), ['wl-item'], 'r キーと同じくダイアログの項目をクリックする');
+  assert.deepEqual(auto.goModes(), ['page'], 'メインワールドには edit_playlist を送らせない');
+  assert.deepEqual(auto.calls, r.calls, '表示・バッジ・取り直しの呼び出しが r キーと同じ');
+  assert.equal(auto.calls.at(-1)[0], 'embed', '完了後にパネルを取り直す');
+});
+
+test('ダイアログの状態が「追加済み」でなければ内部 API で外し、サーバーに反映されたらパネルを取り直す', async () => {
+  const env = loadContentScript();
+  const panel = makePanel();
+  env.state.panel = panel;
+  attachDialog(env, panel, { added: null }); // 状態が読めない
+  env.sendFromMainWorld({ type: 'ready', videoId: 'vid1', requestId: 'vid1:1' });
+  assert.deepEqual(env.goModes(), ['api']);
+  assert.deepEqual(env.run('__clicked'), []);
+  env.sendFromMainWorld({ type: 'result', videoId: 'vid1', requestId: 'vid1:1', result: 'removed', status: 200 });
+  await env.flush();
+  const embedsBefore = env.calls.filter(c => c[0] === 'embed').length;
+
+  panel._isEmbedding = false;
+  panel._playlistBusy = false;
+  env.sendFromMainWorld({ type: 'synced', videoId: 'vid1' });
+  assert.equal(env.calls.filter(c => c[0] === 'embed').length, embedsBefore + 1, '反映後にもう一度取り直す');
+});
+
+test('反映の知らせが来ても、別の動画のパネルや処理中のパネルは取り直さない', () => {
+  const other = loadContentScript();
+  other.state.panel = makePanel();
+  other.context.location.search = '?v=vid2';
+  other.sendFromMainWorld({ type: 'synced', videoId: 'vid1' });
+  assert.equal(other.calls.length, 0);
+
+  const busy = loadContentScript();
+  const panel = makePanel();
+  panel._playlistBusy = true;
+  busy.state.panel = panel;
+  busy.sendFromMainWorld({ type: 'synced', videoId: 'vid1' });
+  assert.equal(busy.calls.length, 0);
 });
