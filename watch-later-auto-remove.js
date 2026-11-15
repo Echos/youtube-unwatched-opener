@@ -25,6 +25,9 @@
   let debug = false;
   const tracker = core.createWatchLaterProgressTracker();
   let discontinuity = true;
+  // 後で見るのリストから続けて再生している時に外した動画と、その次の動画
+  let pendingAdvance = null;
+  const ADVANCE_WAIT_MS = 3000;
 
   function log(...args) {
     if (debug) console.log('[後で見る自動削除]', ...args);
@@ -96,6 +99,9 @@
     if (!player || !player.contains(video)) return;
 
     const sample = takeSample(player, video);
+    if (pendingAdvance && sample.videoId && sample.videoId !== pendingAdvance.removedVideoId) {
+      pendingAdvance = null; // 次の動画へ進んだ
+    }
     if (tracker.update(sample, config)) {
       log(`${config.percent}%に達したため確認します (${sample.videoId}, mode=${config.mode}, ` +
         `再生した区間 ${Math.round(tracker.getPlayedSeconds())}/${Math.round(sample.duration)}秒)`);
@@ -109,6 +115,41 @@
     if (player && event.target instanceof HTMLVideoElement && player.contains(event.target)) {
       discontinuity = true;
     }
+  }
+
+  // ---------- 後で見るのリストの続きの再生 ----------
+  // list=WL で再生中の動画を外しても、ページが持つリストは変わらないため通常は次へ進む。
+  // 万一止まった時のために、外す前に次の動画を覚えておき、終了後に進んでいなければ進める
+  function getWatchLaterListNext(player, videoId) {
+    const listId = typeof player.getPlaylistId === 'function' ? player.getPlaylistId() : null;
+    const urlListId = new URLSearchParams(window.location.search).get('list');
+    if (listId !== 'WL' && urlListId !== 'WL') return null;
+    const playlist = typeof player.getPlaylist === 'function' ? player.getPlaylist() : null;
+    const index = typeof player.getPlaylistIndex === 'function' ? player.getPlaylistIndex() : null;
+    return core.pickNextPlaylistVideo(playlist, index, videoId);
+  }
+
+  function isStuck(player) {
+    const videoData = player.getVideoData() || {};
+    return core.isStuckAfterRemoval(pendingAdvance, videoData.video_id, player.getPlayerState());
+  }
+
+  // 実機では短い動画だと削除の応答より先に再生が終わることがあるため、終了の時点では
+  // pendingAdvance の有無を見ず、待ったあとで判断する
+  function onEnded(event) {
+    const player = getPlayer();
+    if (!player || !(event.target instanceof HTMLVideoElement) || !player.contains(event.target)) return;
+    setTimeout(() => {
+      if (!pendingAdvance || !isStuck(player)) return;
+      const nextVideoId = pendingAdvance.nextVideoId;
+      log(`次の動画へ進んでいないため進めます (${nextVideoId})`);
+      if (typeof player.nextVideo === 'function') player.nextVideo();
+      setTimeout(() => {
+        if (!isStuck(player)) return;
+        pendingAdvance = null;
+        window.location.assign(`/watch?v=${encodeURIComponent(nextVideoId)}&list=WL`);
+      }, ADVANCE_WAIT_MS);
+    }, ADVANCE_WAIT_MS);
   }
 
   // ---------- InnerTube API ----------
@@ -177,9 +218,12 @@
         return;
       }
 
+      const player = getPlayer();
+      const nextVideoId = player ? getWatchLaterListNext(player, videoId) : null;
       const edit = await callInnertube('browse/edit_playlist', core.buildRemoveRequest(videoId, option.removeEndpoint));
       const succeeded = edit.ok && (!edit.json || !edit.json.status || edit.json.status === 'STATUS_SUCCEEDED');
       log(`edit_playlist: HTTP ${edit.status}, status=${edit.json && edit.json.status}`);
+      if (succeeded && nextVideoId) pendingAdvance = { removedVideoId: videoId, nextVideoId };
       emitResult({ videoId, result: succeeded ? 'removed' : 'remove-failed', status: edit.status, percent: config.percent });
     } catch (e) {
       log('エラー', e);
@@ -192,6 +236,7 @@
   // メディアイベントはバブリングしないが、キャプチャ段階なら document で受け取れる
   // （YouTube が video 要素を作り直しても付け直しが不要）
   document.addEventListener('timeupdate', onTimeUpdate, true);
+  document.addEventListener('ended', onEnded, true);
   for (const type of ['seeking', 'emptied', 'loadstart']) {
     document.addEventListener(type, markDiscontinuity, true);
   }

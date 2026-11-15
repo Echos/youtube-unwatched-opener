@@ -31,10 +31,12 @@ function addToPlaylistResponse(contains, videoId) {
   };
 }
 
-function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { enabled: true, percent: 90, mode: 'crossing' }, editStatus = 200 } = {}) {
+function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { enabled: true, percent: 90, mode: 'crossing' }, editStatus = 200, search = '?v=vid1', playlist = null } = {}) {
   const listeners = {};
   const results = [];
   const requests = [];
+  const timers = [];
+  const navigations = [];
   let wallMs = 0;
 
   class HTMLVideoElement {
@@ -52,6 +54,13 @@ function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { 
     getDuration() { return this.duration; },
     getPlaybackRate() { return 1; },
     getPlayerResponse() { return { videoDetails: { isLive: false, isUpcoming: false } }; },
+    getPlaylistId() { return playlist ? 'WL' : null; },
+    getPlaylist() { return playlist; },
+    getPlaylistIndex() { return playlist ? playlist.indexOf(this.videoData.video_id) : -1; },
+    state: 1,
+    getPlayerState() { return this.state; },
+    nextVideoCalls: 0,
+    nextVideo() { this.nextVideoCalls++; if (this.onNextVideo) this.onNextVideo(); },
     contains(node) { return node === video; }
   };
   const video = new HTMLVideoElement(player);
@@ -91,7 +100,7 @@ function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { 
   }
 
   const window = {
-    location: { pathname: '/watch', origin: 'https://www.youtube.com' },
+    location: { pathname: '/watch', search, origin: 'https://www.youtube.com', assign: (url) => navigations.push(url) },
     ytcfg: { get: (key) => ytcfgValues[key] }
   };
   const context = {
@@ -103,6 +112,8 @@ function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { 
     performance: { now: () => wallMs },
     crypto: globalThis.crypto,
     TextEncoder,
+    URLSearchParams,
+    setTimeout: (fn) => timers.push(fn),
     fetch,
     console
   };
@@ -122,6 +133,13 @@ function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { 
     player,
     results,
     requests,
+    navigations,
+    fire,
+    // 待ち時間（setTimeout）を進める
+    runTimers() {
+      const pending = timers.splice(0);
+      pending.forEach(fn => fn());
+    },
     play(seconds) {
       for (let i = 0; i < seconds * 4; i++) {
         wallMs += 250;
@@ -211,4 +229,70 @@ test('削除に失敗したら remove-failed を知らせる', async () => {
   env.play(100);
   await env.flush();
   assert.deepEqual(env.results, [{ videoId: 'vid1', result: 'remove-failed', status: 403, percent: 90 }]);
+});
+
+test('後で見るのリストから続けて再生している時も外し、YouTube が次へ進めば何もしない', async () => {
+  const env = createEnvironment({ search: '?v=vid1&list=WL', playlist: ['vid1', 'vid2'] });
+  env.play(100);
+  await env.flush();
+  assert.equal(env.results[0].result, 'removed');
+  env.player.state = 0;
+  env.fire('ended');
+  // YouTube がリストの次の動画へ進んだ
+  env.player.videoData = { video_id: 'vid2', isLive: false };
+  env.player.state = 1;
+  env.runTimers();
+  env.runTimers();
+  assert.equal(env.player.nextVideoCalls, 0);
+  assert.deepEqual(env.navigations, []);
+});
+
+test('外したあとに次の動画へ進まなければ、プレイヤーで次へ進め、それでも駄目ならページを移る', async () => {
+  const env = createEnvironment({ search: '?v=vid1&list=WL', playlist: ['vid1', 'vid2'] });
+  env.play(100);
+  await env.flush();
+  env.player.state = 0;
+  env.fire('ended');
+  env.runTimers(); // 3秒後: 進んでいない → nextVideo()
+  assert.equal(env.player.nextVideoCalls, 1);
+  env.runTimers(); // さらに3秒後: まだ進んでいない → 次の動画のページへ
+  assert.deepEqual(env.navigations, ['/watch?v=vid2&list=WL']);
+});
+
+test('nextVideo() で進んだらページは移らない', async () => {
+  const env = createEnvironment({ search: '?v=vid1&list=WL', playlist: ['vid1', 'vid2'] });
+  env.player.onNextVideo = () => { env.player.videoData = { video_id: 'vid2', isLive: false }; env.player.state = 1; };
+  env.play(100);
+  await env.flush();
+  env.player.state = 0;
+  env.fire('ended');
+  env.runTimers();
+  env.runTimers();
+  assert.equal(env.player.nextVideoCalls, 1);
+  assert.deepEqual(env.navigations, []);
+});
+
+test('リストの最後の動画や、リスト外の再生では次へ進めない', async () => {
+  for (const options of [{ search: '?v=vid1&list=WL', playlist: ['vid0', 'vid1'] }, {}]) {
+    const env = createEnvironment(options);
+    env.play(100);
+    await env.flush();
+    assert.equal(env.results[0].result, 'removed');
+    env.player.state = 0;
+    env.fire('ended');
+    env.runTimers();
+    env.runTimers();
+    assert.equal(env.player.nextVideoCalls, 0);
+    assert.deepEqual(env.navigations, []);
+  }
+});
+
+test('削除の応答より先に再生が終わった場合も、止まっていれば次へ進める', async () => {
+  const env = createEnvironment({ search: '?v=vid1&list=WL', playlist: ['vid1', 'vid2'] });
+  env.play(100); // 90%で確認・削除が始まり、応答を待つ間に最後まで再生される
+  env.player.state = 0;
+  env.fire('ended');
+  await env.flush(); // ここで削除が完了する
+  env.runTimers();
+  assert.equal(env.player.nextVideoCalls, 1);
 });

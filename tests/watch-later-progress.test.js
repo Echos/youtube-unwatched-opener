@@ -260,6 +260,24 @@ test('findWatchLaterOption は後で見るの登録状況と削除操作を取�
   assert.equal(core.findWatchLaterOption(null), null);
 });
 
+test('pickNextPlaylistVideo は後で見るのリストの次の動画を返す', () => {
+  const list = ['a', 'b', 'c'];
+  assert.equal(core.pickNextPlaylistVideo(list, 0, 'a'), 'b');
+  assert.equal(core.pickNextPlaylistVideo(list, 5, 'b'), 'c', 'index がずれていても動画IDで探す');
+  assert.equal(core.pickNextPlaylistVideo(list, 2, 'c'), null, '最後の動画');
+  assert.equal(core.pickNextPlaylistVideo(list, 0, 'x'), null, 'リストに無い動画');
+  assert.equal(core.pickNextPlaylistVideo(null, 0, 'a'), null);
+});
+
+test('isStuckAfterRemoval は外した動画のまま再生終了で止まっている時だけ true', () => {
+  const pending = { removedVideoId: 'a', nextVideoId: 'b' };
+  assert.equal(core.isStuckAfterRemoval(pending, 'a', 0), true);
+  assert.equal(core.isStuckAfterRemoval(pending, 'b', 1), false, '次へ進んだ');
+  assert.equal(core.isStuckAfterRemoval(pending, 'a', 2), false, '一時停止中（終了ではない）');
+  assert.equal(core.isStuckAfterRemoval(null, 'a', 0), false);
+  assert.equal(core.isStuckAfterRemoval({ removedVideoId: 'a', nextVideoId: null }, 'a', 0), false);
+});
+
 test('buildRemoveRequest は YouTube の削除操作を使い、無い・別の動画向けなら組み立てる', () => {
   const option = core.findWatchLaterOption(makeAddToPlaylistResponse('ALL', 'vid1'));
   assert.deepEqual(core.buildRemoveRequest('vid1', option.removeEndpoint), {

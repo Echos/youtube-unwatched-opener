@@ -150,6 +150,22 @@
     };
   }
 
+  // 後で見るのリストから続けて再生している時（list=WL）に、外した動画の次に再生されるはずの動画
+  // playlist: プレイヤーの getPlaylist()（動画IDの配列）、index: getPlaylistIndex()
+  function pickNextPlaylistVideo(playlist, index, currentId) {
+    if (!Array.isArray(playlist) || playlist.length === 0) return null;
+    let position = Number.isInteger(index) && playlist[index] === currentId ? index : playlist.indexOf(currentId);
+    if (position < 0) return null;
+    const next = playlist[position + 1];
+    return typeof next === 'string' && next && next !== currentId ? next : null;
+  }
+
+  // 外した動画が終わったあと、次の動画へ進んでいない（YouTube が止まっている）かどうか
+  // state: getPlayerState()（0 = 再生終了）
+  function isStuckAfterRemoval(pending, currentVideoId, state) {
+    return !!pending && !!pending.nextVideoId && currentVideoId === pending.removedVideoId && state === 0;
+  }
+
   const api = {
     MODES,
     DEFAULT_CONFIG,
@@ -161,7 +177,9 @@
     totalLength,
     createWatchLaterProgressTracker,
     findWatchLaterOption,
-    buildRemoveRequest
+    buildRemoveRequest,
+    pickNextPlaylistVideo,
+    isStuckAfterRemoval
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
