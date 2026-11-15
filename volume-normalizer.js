@@ -6,9 +6,10 @@
 // 設定は content.js が <html data-youtube-unwatched-opener-volume> にJSONで書き込み、
 // 'youtube-unwatched-opener:volume-settings' イベントで変更を通知する。
 //
-// 信号経路: video → [video.volume打ち消しGain] → [ラウドネス補正Gain] → [コンプレッサー] → [リミッター]
-//                → [スライダー音量Gain] → 出力
-//          video → [K特性近似フィルタ] → Analyser（計測用の分岐、出力には流さない）
+// 信号経路: video → [video.volume打ち消しGain] → [声の強調] → [ラウドネス補正Gain] → [コンプレッサー]
+//                → [リミッター] → [スライダー音量Gain] → 出力
+//          声の強調の出力 → [K特性近似フィルタ] → Analyser（補正量を決める計測用。出力には流さない）
+//          リミッター → [K特性近似フィルタ] → Analyser（補正後の確認用。可視化オーバーレイ表示時に使う）
 //
 // 補正量は15秒窓・相対ゲート付きの推定で決める。声の合間のBGMだけの区間で利得を上げたり、
 // コンプレッサーで声のピークだけを潰したりすると、BGMが声より持ち上がって聞こえるため
@@ -40,13 +41,28 @@
   const MAX_VOLUME_COMPENSATION_DB = 30; // video.volume の減衰を打ち消す量の上限
   // コンプレッサーは突発的なピークを抑えるだけにする。閾値を目標ラウドネス付近に置くと
   // 波高率の大きい声のピークだけが潰され、波高率の小さいBGMが相対的に大きく聞こえる
-  const COMPRESSOR_THRESHOLD_OFFSET_DB = 8;
+  const COMPRESSOR_THRESHOLD_OFFSET_DB = 12;
   const TIME_CONSTANT_DOWN = 0.5;    // 大きくなった時は早めに下げる
   const TIME_CONSTANT_UP = 3.0;      // 小さくなった時はゆっくり上げる（ポンピング防止）
   // Analyserはステレオをモノラル平均にダウンミックスするため、BS.1770のチャンネル総和との差(+3dB)を補正する
   const LUFS_OFFSET = -0.691 + 3.01;
 
-  let settings = { enabled: false, targetLufs: -14 };
+  // 声の強調。声は中央に定位し、BGMは左右に広がっていることが多いため、
+  // サイド成分（L-R）を下げて相対的に声を前に出し、声の明瞭度に効く帯域を少し持ち上げる
+  const VOICE_SIDE_GAIN = 0.6;        // サイド成分の倍率（約-4.4dB）
+  const VOICE_PRESENCE_HZ = 2500;
+  const VOICE_PRESENCE_DB = 3;
+  const VOICE_LOW_SHELF_HZ = 180;     // BGMのベース・キックが声を覆い隠しやすい帯域
+  const VOICE_LOW_SHELF_DB = -3;
+
+  // 可視化オーバーレイ
+  const OVERLAY_HISTORY_BLOCKS = 150; // グラフに表示する履歴（100ms × 150 = 15秒）
+  const OVERLAY_MIN_LUFS = -50;
+  const OVERLAY_MAX_LUFS = 0;
+  const OVERLAY_WIDTH = 240;
+  const OVERLAY_HEIGHT = 72;
+
+  let settings = { enabled: false, targetLufs: -14, voiceEmphasis: true, showOverlay: false };
   let audioContext = null;
   const chains = new Map(); // HTMLVideoElement -> chain
 
@@ -57,7 +73,9 @@
         const parsed = JSON.parse(raw);
         settings = {
           enabled: !!parsed.enabled,
-          targetLufs: Number.isFinite(parsed.targetLufs) ? parsed.targetLufs : -14
+          targetLufs: Number.isFinite(parsed.targetLufs) ? parsed.targetLufs : -14,
+          voiceEmphasis: parsed.voiceEmphasis !== false,
+          showOverlay: !!parsed.showOverlay
         };
       }
     } catch (e) {
@@ -95,6 +113,68 @@
     return audioContext;
   }
 
+  function createKWeightedAnalyser(ctx) {
+    // ITU-R BS.1770 のK特性を近似（低域カット＋高域シェルフ）
+    const highpass = ctx.createBiquadFilter();
+    highpass.type = 'highpass';
+    highpass.frequency.value = 38;
+    highpass.Q.value = 0.5;
+    const shelf = ctx.createBiquadFilter();
+    shelf.type = 'highshelf';
+    shelf.frequency.value = 1681;
+    shelf.gain.value = 4;
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 4096;
+    highpass.connect(shelf);
+    shelf.connect(analyser);
+    return { input: highpass, analyser };
+  }
+
+  // 声の強調段。input/output と、ON/OFFで切り替えるパラメータを返す
+  function createVoiceEmphasis(ctx) {
+    // モノラル素材を左右同じ信号に広げてからM/S処理する（そのままだと右チャンネルが無音扱いになり左右が崩れる）
+    const input = ctx.createGain();
+    input.channelCount = 2;
+    input.channelCountMode = 'explicit';
+    input.channelInterpretation = 'speakers';
+
+    // L' = L·(1+k)/2 + R·(1-k)/2、R' = R·(1+k)/2 + L·(1-k)/2（k=サイド成分の倍率）
+    const splitter = ctx.createChannelSplitter(2);
+    const merger = ctx.createChannelMerger(2);
+    const direct = [ctx.createGain(), ctx.createGain()];
+    const cross = [ctx.createGain(), ctx.createGain()];
+    input.connect(splitter);
+    for (let ch = 0; ch < 2; ch++) {
+      splitter.connect(direct[ch], ch);
+      splitter.connect(cross[ch], ch);
+      direct[ch].connect(merger, 0, ch);
+      cross[ch].connect(merger, 0, 1 - ch);
+    }
+
+    const lowShelf = ctx.createBiquadFilter();
+    lowShelf.type = 'lowshelf';
+    lowShelf.frequency.value = VOICE_LOW_SHELF_HZ;
+    const presence = ctx.createBiquadFilter();
+    presence.type = 'peaking';
+    presence.frequency.value = VOICE_PRESENCE_HZ;
+    presence.Q.value = 0.8;
+    merger.connect(lowShelf);
+    lowShelf.connect(presence);
+
+    return {
+      input,
+      output: presence,
+      apply(enabled) {
+        const k = enabled ? VOICE_SIDE_GAIN : 1;
+        const now = ctx.currentTime;
+        direct.forEach(node => node.gain.setTargetAtTime((1 + k) / 2, now, 0.05));
+        cross.forEach(node => node.gain.setTargetAtTime((1 - k) / 2, now, 0.05));
+        lowShelf.gain.setTargetAtTime(enabled ? VOICE_LOW_SHELF_DB : 0, now, 0.05);
+        presence.gain.setTargetAtTime(enabled ? VOICE_PRESENCE_DB : 0, now, 0.05);
+      }
+    };
+  }
+
   function createChain(video) {
     const ctx = audioContext;
     const source = ctx.createMediaElementSource(video);
@@ -102,6 +182,7 @@
     // Chromeでは video.volume / muted がMediaElementSourceの出力に反映される（実測で線形）ため、
     // その減衰をここで打ち消し、以降の処理を常に素材そのもののレベルで行う
     const volumeCompensation = ctx.createGain();
+    const voiceEmphasis = createVoiceEmphasis(ctx);
     const gain = ctx.createGain();
 
     // 補正Gainで持ち上げた後の突発的なピークを軽く抑える
@@ -119,36 +200,37 @@
     limiter.attack.value = 0.001;
     limiter.release.value = 0.1;
 
-    // ITU-R BS.1770 のK特性を近似（低域カット＋高域シェルフ）
-    const highpass = ctx.createBiquadFilter();
-    highpass.type = 'highpass';
-    highpass.frequency.value = 38;
-    highpass.Q.value = 0.5;
-    const shelf = ctx.createBiquadFilter();
-    shelf.type = 'highshelf';
-    shelf.frequency.value = 1681;
-    shelf.gain.value = 4;
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 4096;
+    // 声の強調の後で計測する（強調で変わったレベルも含めて目標に合わせるため）
+    const inputMeter = createKWeightedAnalyser(ctx);
+    // 補正後（スライダー音量を掛ける前）のレベル。目標ラウドネスに揃っているかの確認用
+    const outputMeter = createKWeightedAnalyser(ctx);
 
     // スライダー音量はコンプレッサーより後段で掛ける。
     // 前段（video.volume）のままだとコンプレッサーに音量差を圧縮され、スライダーを下げても音が小さくならない
     const userVolume = ctx.createGain();
     userVolume.gain.value = getUserVolume(video);
 
-    volumeCompensation.connect(gain);
+    volumeCompensation.connect(voiceEmphasis.input);
+    voiceEmphasis.output.connect(gain);
+    voiceEmphasis.output.connect(inputMeter.input);
     gain.connect(compressor);
     compressor.connect(limiter);
     limiter.connect(userVolume);
+    limiter.connect(outputMeter.input);
     userVolume.connect(ctx.destination);
-    source.connect(highpass);
-    highpass.connect(shelf);
-    shelf.connect(analyser);
+    voiceEmphasis.apply(settings.voiceEmphasis);
 
     const chain = {
-      video, source, volumeCompensation, gain, compressor, userVolume, analyser,
-      buffer: new Float32Array(analyser.fftSize),
+      video, source, volumeCompensation, voiceEmphasis, gain, compressor, limiter, userVolume,
+      analyser: inputMeter.analyser,
+      outputAnalyser: outputMeter.analyser,
+      buffer: new Float32Array(inputMeter.analyser.fftSize),
       blocks: [],
+      outputBlocks: [],
+      // オーバーレイのグラフ用。無音・停止中は null を入れて線を途切れさせる
+      inputHistory: [],
+      outputHistory: [],
+      overlay: null,
       routedThroughChain: null
     };
 
@@ -156,6 +238,9 @@
     // （playerResponseの trackAbsoluteLoudnessLkfs は実測とのズレが動画ごとに一定でないため初期推定には使わない）
     video.addEventListener('loadedmetadata', () => {
       chain.blocks = [];
+      chain.outputBlocks = [];
+      chain.inputHistory = [];
+      chain.outputHistory = [];
     });
     // 補正Gainの追従（時定数）を待たず、スライダー操作を即座に反映する
     video.addEventListener('volumechange', () => updateVolumeNodes(chain));
@@ -185,19 +270,18 @@
     chain.userVolume.gain.setTargetAtTime(getUserVolume(chain.video), now, 0.01);
   }
 
-  // 現在のブロックのラウドネス（video.volume による減衰を除いた素材そのものの値）
-  function measureBlock(chain) {
-    chain.analyser.getFloatTimeDomainData(chain.buffer);
+  function measureAnalyser(analyser, buffer) {
+    analyser.getFloatTimeDomainData(buffer);
     let sum = 0;
-    for (let i = 0; i < chain.buffer.length; i++) {
-      sum += chain.buffer[i] * chain.buffer[i];
+    for (let i = 0; i < buffer.length; i++) {
+      sum += buffer[i] * buffer[i];
     }
-    const meanSquare = sum / chain.buffer.length;
+    const meanSquare = sum / buffer.length;
     if (meanSquare <= 0) {
       return null;
     }
-    // 計測分岐は volumeCompensation より前から取っているため、video.volume の分をここで戻す
-    return LUFS_OFFSET + 10 * Math.log10(meanSquare) - gainToDb(chain.video.volume);
+    const lufs = LUFS_OFFSET + 10 * Math.log10(meanSquare);
+    return lufs > SILENCE_GATE_LUFS ? lufs : null;
   }
 
   // 平均はエネルギー領域で取る（dBの単純平均だと小さい区間に引きずられる）
@@ -232,20 +316,44 @@
     return longTerm;
   }
 
+  function pushLimited(list, value, max) {
+    list.push(value);
+    if (list.length > max) {
+      list.shift();
+    }
+  }
+
   function updateChain(chain) {
     const video = chain.video;
     if (!settings.enabled || video.paused || video.muted || video.volume === 0) {
+      if (settings.enabled && settings.showOverlay && !video.paused) {
+        // ミュート中は計測できないため、グラフの線を途切れさせて状態だけ表示する
+        pushLimited(chain.inputHistory, null, OVERLAY_HISTORY_BLOCKS);
+        pushLimited(chain.outputHistory, null, OVERLAY_HISTORY_BLOCKS);
+      }
+      updateOverlay(chain);
       return;
     }
 
-    const block = measureBlock(chain);
-    if (block !== null && block > SILENCE_GATE_LUFS) {
-      chain.blocks.push(block);
-      if (chain.blocks.length > LONG_WINDOW_BLOCKS) {
-        chain.blocks.shift();
+    // 計測点は打ち消しGainの後なので、video.volume による減衰を除いた素材そのもののレベルになる
+    const block = measureAnalyser(chain.analyser, chain.buffer);
+    if (block !== null) {
+      pushLimited(chain.blocks, block, LONG_WINDOW_BLOCKS);
+    }
+    if (settings.showOverlay) {
+      const output = measureAnalyser(chain.outputAnalyser, chain.buffer);
+      if (output !== null) {
+        pushLimited(chain.outputBlocks, output, LONG_WINDOW_BLOCKS);
       }
+      pushLimited(chain.inputHistory, block, OVERLAY_HISTORY_BLOCKS);
+      pushLimited(chain.outputHistory, output, OVERLAY_HISTORY_BLOCKS);
     }
 
+    applyCorrection(chain);
+    updateOverlay(chain);
+  }
+
+  function applyCorrection(chain) {
     const loudness = estimateLoudness(chain);
     if (loudness === null) {
       return;
@@ -260,6 +368,176 @@
     const current = chain.gain.gain.value;
     const timeConstant = target < current ? TIME_CONSTANT_DOWN : TIME_CONSTANT_UP;
     chain.gain.gain.setTargetAtTime(target, audioContext.currentTime, timeConstant);
+  }
+
+  // ===== 可視化オーバーレイ =====
+  // 素材のレベル（補正前）と補正後のレベルを15秒分のグラフで重ね、目標ラウドネスとの差と補正量・圧縮量を数値で出す
+
+  function formatDb(value, signed) {
+    if (value === null || !Number.isFinite(value)) {
+      return '--';
+    }
+    const text = value.toFixed(1);
+    return signed && value > 0 ? `+${text}` : text;
+  }
+
+  function createOverlay() {
+    const root = document.createElement('div');
+    root.className = 'youtube-unwatched-opener-volume-overlay';
+
+    const header = document.createElement('div');
+    header.className = 'vo-header';
+    const title = document.createElement('span');
+    title.className = 'vo-title';
+    title.textContent = '音量平滑化';
+    const state = document.createElement('span');
+    state.className = 'vo-state';
+    header.append(title, state);
+
+    const canvas = document.createElement('canvas');
+    canvas.className = 'vo-graph';
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = Math.round(OVERLAY_WIDTH * ratio);
+    canvas.height = Math.round(OVERLAY_HEIGHT * ratio);
+    canvas.style.width = `${OVERLAY_WIDTH}px`;
+    canvas.style.height = `${OVERLAY_HEIGHT}px`;
+
+    const stats = document.createElement('div');
+    stats.className = 'vo-stats';
+    const values = {};
+    [
+      ['input', '素材', 'LUFS'],
+      ['output', '補正後', 'LUFS'],
+      ['gain', '補正', 'dB'],
+      ['reduction', '圧縮', 'dB']
+    ].forEach(([key, label, unit]) => {
+      const item = document.createElement('div');
+      item.className = `vo-stat vo-stat-${key}`;
+      const labelEl = document.createElement('span');
+      labelEl.className = 'vo-label';
+      labelEl.textContent = label;
+      const valueEl = document.createElement('span');
+      valueEl.className = 'vo-value';
+      const unitEl = document.createElement('span');
+      unitEl.className = 'vo-unit';
+      unitEl.textContent = unit;
+      item.append(labelEl, valueEl, unitEl);
+      stats.append(item);
+      values[key] = valueEl;
+    });
+
+    root.append(header, canvas, stats);
+    return { root, canvas, ratio, state, values };
+  }
+
+  function lufsToY(lufs) {
+    const clamped = Math.min(OVERLAY_MAX_LUFS, Math.max(OVERLAY_MIN_LUFS, lufs));
+    return (OVERLAY_MAX_LUFS - clamped) / (OVERLAY_MAX_LUFS - OVERLAY_MIN_LUFS) * OVERLAY_HEIGHT;
+  }
+
+  function drawHistory(g, history, color) {
+    const step = OVERLAY_WIDTH / (OVERLAY_HISTORY_BLOCKS - 1);
+    // 新しい値を右端に揃える
+    const offset = OVERLAY_HISTORY_BLOCKS - history.length;
+    g.strokeStyle = color;
+    g.lineWidth = 1.5;
+    g.beginPath();
+    let drawing = false;
+    history.forEach((lufs, i) => {
+      if (lufs === null) {
+        drawing = false;
+        return;
+      }
+      const x = (offset + i) * step;
+      const y = lufsToY(lufs);
+      if (drawing) {
+        g.lineTo(x, y);
+      } else {
+        g.moveTo(x, y);
+        drawing = true;
+      }
+    });
+    g.stroke();
+  }
+
+  function drawGraph(overlay, chain) {
+    const g = overlay.canvas.getContext('2d');
+    g.setTransform(overlay.ratio, 0, 0, overlay.ratio, 0, 0);
+    g.clearRect(0, 0, OVERLAY_WIDTH, OVERLAY_HEIGHT);
+
+    g.font = '9px monospace';
+    g.textBaseline = 'middle';
+    g.lineWidth = 1;
+    for (let lufs = -10; lufs > OVERLAY_MIN_LUFS; lufs -= 10) {
+      const y = Math.round(lufsToY(lufs)) + 0.5;
+      g.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+      g.beginPath();
+      g.moveTo(0, y);
+      g.lineTo(OVERLAY_WIDTH, y);
+      g.stroke();
+      g.fillStyle = 'rgba(255, 255, 255, 0.35)';
+      g.fillText(String(lufs), 2, y - 5);
+    }
+
+    const targetY = Math.round(lufsToY(settings.targetLufs)) + 0.5;
+    g.strokeStyle = 'rgba(255, 64, 64, 0.9)';
+    g.setLineDash([4, 3]);
+    g.beginPath();
+    g.moveTo(0, targetY);
+    g.lineTo(OVERLAY_WIDTH, targetY);
+    g.stroke();
+    g.setLineDash([]);
+
+    drawHistory(g, chain.inputHistory, 'rgba(200, 200, 200, 0.7)');
+    drawHistory(g, chain.outputHistory, '#3ea6ff');
+  }
+
+  function removeOverlay(chain) {
+    if (chain.overlay) {
+      chain.overlay.root.remove();
+      chain.overlay = null;
+    }
+  }
+
+  function updateOverlay(chain) {
+    const player = getPlayer(chain.video);
+    // 一覧ページのホバー再生（インラインプレイヤー）には出さず、動画ページのプレイヤーだけに出す
+    if (!settings.enabled || !settings.showOverlay || !player || player.id !== 'movie_player') {
+      removeOverlay(chain);
+      return;
+    }
+    if (document.hidden) {
+      return;
+    }
+    if (!chain.overlay) {
+      chain.overlay = createOverlay();
+    }
+    const overlay = chain.overlay;
+    if (overlay.root.parentNode !== player) {
+      player.appendChild(overlay.root);
+    }
+
+    const video = chain.video;
+    const inputLufs = estimateLoudness(chain);
+    let state = `目標 ${settings.targetLufs} LUFS`;
+    if (video.paused) {
+      state = '一時停止中';
+    } else if (video.muted || video.volume === 0) {
+      state = 'ミュート中';
+    } else if (inputLufs === null) {
+      state = '計測中…';
+    }
+    overlay.state.textContent = state;
+
+    // 素材側と同じ15秒窓・相対ゲートで求め、目標ラウドネスと比べられる値にする
+    const outputLufs = gatedLoudness(chain.outputBlocks, LONG_WINDOW_BLOCKS);
+    const reduction = chain.compressor.reduction + chain.limiter.reduction;
+    overlay.values.input.textContent = formatDb(inputLufs, false);
+    overlay.values.output.textContent = formatDb(outputLufs, false);
+    overlay.values.gain.textContent = formatDb(gainToDb(chain.gain.gain.value), true);
+    overlay.values.reduction.textContent = formatDb(reduction < -0.05 ? reduction : 0, false);
+
+    drawGraph(overlay, chain);
   }
 
   function attachVideo(video) {
@@ -303,6 +581,8 @@
     for (const chain of chains.values()) {
       if (chain) {
         applyRouting(chain);
+        chain.voiceEmphasis.apply(settings.voiceEmphasis);
+        updateOverlay(chain);
       }
     }
     scan();
@@ -324,6 +604,8 @@
         loudnessLufs: estimateLoudness(chain),
         measuredBlocks: chain.blocks.length,
         gainDb: gainToDb(chain.gain.gain.value),
+        outputLufs: gatedLoudness(chain.outputBlocks, LONG_WINDOW_BLOCKS),
+        reductionDb: chain.compressor.reduction + chain.limiter.reduction,
         routedThroughChain: chain.routedThroughChain
       }))
     })

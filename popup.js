@@ -15,7 +15,9 @@ const DEFAULT_SETTINGS = {
   hideRelatedVideos: true,
   highQualityEnabled: false,
   volumeNormalizeEnabled: true,
-  volumeTargetLufs: -14
+  volumeTargetLufs: -14,
+  volumeVoiceEmphasis: true,
+  volumeOverlayEnabled: false
 };
 
 // ========== DOM 参照 ==========
@@ -36,6 +38,8 @@ const el = {
   highQualityEnabled:    document.getElementById('highQualityEnabled'),
   volumeNormalizeEnabled: document.getElementById('volumeNormalizeEnabled'),
   volumeTargetLufs:      document.getElementById('volumeTargetLufs'),
+  volumeVoiceEmphasis:   document.getElementById('volumeVoiceEmphasis'),
+  volumeOverlayEnabled:  document.getElementById('volumeOverlayEnabled'),
   statusDot:             document.getElementById('status-dot'),
   status:                document.getElementById('status'),
   toggleLabel:           document.getElementById('toggle-label'),
@@ -78,7 +82,9 @@ function getSettingsFromDOM() {
     hideRelatedVideos:     el.hideRelatedVideos.checked,
     highQualityEnabled:    el.highQualityEnabled.checked,
     volumeNormalizeEnabled: el.volumeNormalizeEnabled.checked,
-    volumeTargetLufs:      parseInt(el.volumeTargetLufs.value)
+    volumeTargetLufs:      parseInt(el.volumeTargetLufs.value),
+    volumeVoiceEmphasis:   el.volumeVoiceEmphasis.checked,
+    volumeOverlayEnabled:  el.volumeOverlayEnabled.checked
   };
 }
 
@@ -120,6 +126,8 @@ function loadSettings() {
     el.highQualityEnabled.checked    = settings.highQualityEnabled;
     el.volumeNormalizeEnabled.checked = settings.volumeNormalizeEnabled;
     el.volumeTargetLufs.value        = settings.volumeTargetLufs;
+    el.volumeVoiceEmphasis.checked   = settings.volumeVoiceEmphasis;
+    el.volumeOverlayEnabled.checked  = settings.volumeOverlayEnabled;
 
     el.toggleLabel.textContent = settings.enabled ? 'ON' : 'OFF';
 
@@ -169,7 +177,7 @@ el.enabled.addEventListener('change', () => {
   el.shortcutKey, el.highlightEnabled, el.watchLaterKey, el.bgmPlaylistKey,
   el.bgmPlaylistName, el.centerToastEnabled,
   el.showPlaylistPanel, el.debugMode, el.includeShorts, el.hideRelatedVideos,
-  el.highQualityEnabled, el.volumeNormalizeEnabled
+  el.highQualityEnabled, el.volumeNormalizeEnabled, el.volumeVoiceEmphasis, el.volumeOverlayEnabled
 ].forEach(input => input.addEventListener('change', saveSettings));
 
 // ========== イベント: 数値入力 ==========

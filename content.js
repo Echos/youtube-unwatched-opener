@@ -15,7 +15,9 @@ const DEFAULT_SETTINGS = {
   hideRelatedVideos: true,  // 動画ページ右側の関連動画欄を非表示にするか（データ通信量削減）
   volumeNormalizeEnabled: true,  // 再生音量を目標ラウドネスに平滑化するか
   highQualityEnabled: false,  // 再生画質を1440p（無ければ1080p）に優先設定するか
-  volumeTargetLufs: -14  // 平滑化の目標ラウドネス（LUFS、-30〜-6）
+  volumeTargetLufs: -14,  // 平滑化の目標ラウドネス（LUFS、-30〜-6）
+  volumeVoiceEmphasis: true,  // 平滑化時に声をBGMより前に出すか
+  volumeOverlayEnabled: false  // 平滑化の調整結果を動画上にオーバーレイ表示するか
 };
 
 let settings = DEFAULT_SETTINGS;
@@ -2675,7 +2677,8 @@ browserAPI.storage.onChanged.addListener((changes) => {
       document.dispatchEvent(new Event('yt-navigate-start')); // 再生中の動画にも反映する
     }
   }
-  if (changes.volumeNormalizeEnabled || changes.volumeTargetLufs) {
+  if (changes.volumeNormalizeEnabled || changes.volumeTargetLufs ||
+      changes.volumeVoiceEmphasis || changes.volumeOverlayEnabled) {
     publishVolumeNormalizerSettings();
   }
   if (changes.showPlaylistPanel) {
@@ -2986,7 +2989,9 @@ function injectQualityEnforcerScript() {
 function publishVolumeNormalizerSettings() {
   document.documentElement.setAttribute('data-youtube-unwatched-opener-volume', JSON.stringify({
     enabled: !!settings.volumeNormalizeEnabled,
-    targetLufs: Number(settings.volumeTargetLufs)
+    targetLufs: Number(settings.volumeTargetLufs),
+    voiceEmphasis: settings.volumeVoiceEmphasis !== false,
+    showOverlay: !!settings.volumeOverlayEnabled
   }));
   document.dispatchEvent(new Event('youtube-unwatched-opener:volume-settings'));
 }
