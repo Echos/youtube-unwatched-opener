@@ -133,6 +133,43 @@
 
     <div class="row">
       <div class="row-label">
+        見終わったら外す
+        <small>後で見るから自動で削除</small>
+      </div>
+      <label class="toggle" style="margin-left:auto">
+        <input type="checkbox" id="watchLaterAutoRemoveEnabled">
+        <div class="toggle-track"></div>
+        <div class="toggle-thumb"></div>
+      </label>
+    </div>
+
+    <div class="row">
+      <div class="row-label">
+        外す位置
+        <small>動画の長さの % (50–99)</small>
+      </div>
+      <div class="row-ctrl">
+        <input type="number" id="watchLaterAutoRemovePercent" min="50" max="99" value="90">
+        <span class="field-error" id="watchLaterAutoRemovePercentError"></span>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row-label">
+        判定の方法
+        <small>シークで先に飛んだ時の扱い</small>
+      </div>
+      <div class="row-ctrl">
+        <select id="watchLaterAutoRemoveMode">
+          <option value="crossing">再生して通過</option>
+          <option value="coverage">再生した合計</option>
+          <option value="position">位置だけ</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row-label">
         中央に処理状況
         <small>動画の中央にも表示</small>
       </div>

@@ -17,7 +17,10 @@ const DEFAULT_SETTINGS = {
   highQualityEnabled: false,  // 再生画質を1440p（無ければ1080p）に優先設定するか
   volumeTargetLufs: -14,  // 平滑化の目標ラウドネス（LUFS、-30〜-6）
   volumeVoiceEmphasis: true,  // 平滑化時に声をBGMより前に出すか
-  volumeOverlayEnabled: false  // 平滑化の調整結果を動画上にオーバーレイ表示するか
+  volumeOverlayEnabled: false,  // 平滑化の調整結果を動画上にオーバーレイ表示するか
+  watchLaterAutoRemoveEnabled: true,  // 見終わった動画を後で見るから外すか
+  watchLaterAutoRemovePercent: 90,  // 動画の長さの何%で外すか（50〜99）
+  watchLaterAutoRemoveMode: 'crossing'  // crossing: 再生して通過した時 / coverage: 再生した区間の合計 / position: 位置だけ（シーク含む）
 };
 
 let settings = DEFAULT_SETTINGS;
@@ -2648,6 +2651,7 @@ browserAPI.storage.sync.get(DEFAULT_SETTINGS).then((result) => {
   initializeShortsRedirect();
   injectQualityEnforcerScript();
   injectVolumeNormalizerScript();
+  injectWatchLaterAutoRemoveScript();
 
   // #secondary要素の出現を待って即時初期化（最大4秒、タイムアウト時はそのまま実行）
   waitForElement('#secondary', { timeout: 4000 })
@@ -2680,6 +2684,10 @@ browserAPI.storage.onChanged.addListener((changes) => {
   if (changes.volumeNormalizeEnabled || changes.volumeTargetLufs ||
       changes.volumeVoiceEmphasis || changes.volumeOverlayEnabled) {
     publishVolumeNormalizerSettings();
+  }
+  if (changes.watchLaterAutoRemoveEnabled || changes.watchLaterAutoRemovePercent ||
+      changes.watchLaterAutoRemoveMode || changes.debugMode) {
+    publishWatchLaterAutoRemoveSettings();
   }
   if (changes.showPlaylistPanel) {
     if (settings.showPlaylistPanel) {
@@ -3009,6 +3017,67 @@ function injectVolumeNormalizerScript() {
   };
   (document.head || document.documentElement).appendChild(script);
 }
+
+// 見終わった動画の「後で見る」からの自動削除（watch-later-progress.js + watch-later-auto-remove.js）。
+// プレイヤーAPI（getVideoData 等）と ytcfg（ログイン中のセッション情報）がメインワールドにしか無いため、
+// 判定と削除はメインワールドに注入したスクリプトで行い、結果だけをイベントで受け取って表示する
+function publishWatchLaterAutoRemoveSettings() {
+  document.documentElement.setAttribute('data-youtube-unwatched-opener-watch-later', JSON.stringify({
+    enabled: !!settings.watchLaterAutoRemoveEnabled,
+    percent: Number(settings.watchLaterAutoRemovePercent),
+    mode: settings.watchLaterAutoRemoveMode,
+    debug: !!settings.debugMode
+  }));
+  document.dispatchEvent(new Event('youtube-unwatched-opener:watch-later-settings'));
+}
+
+function injectMainWorldScript(id, file) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.id = id;
+    script.src = browserAPI.runtime.getURL(file);
+    script.onload = function() {
+      this.remove();
+      resolve();
+    };
+    script.onerror = () => reject(new Error(`${file} を読み込めませんでした`));
+    (document.head || document.documentElement).appendChild(script);
+  });
+}
+
+function injectWatchLaterAutoRemoveScript() {
+  publishWatchLaterAutoRemoveSettings();
+  if (document.documentElement.dataset.youtubeUnwatchedOpenerWatchLaterInjected) return;
+  document.documentElement.dataset.youtubeUnwatchedOpenerWatchLaterInjected = '1';
+  // 判定ロジックを先に読み込み、続けて本体を読み込む
+  injectMainWorldScript('youtube-unwatched-opener-watch-later-progress', 'watch-later-progress.js')
+    .then(() => injectMainWorldScript('youtube-unwatched-opener-watch-later-auto-remove', 'watch-later-auto-remove.js'))
+    .catch((err) => console.log('[後で見る自動削除]', err.message));
+}
+
+document.addEventListener('youtube-unwatched-opener:watch-later-auto-remove', (event) => {
+  let detail = null;
+  try {
+    detail = JSON.parse(event.detail);
+  } catch (e) {
+    return;
+  }
+  if (!detail) return;
+  console.log(`[後で見る自動削除] ${detail.result} (${detail.videoId}, HTTP ${detail.status})`);
+
+  // 中央の表示は視聴の邪魔になるため使わず、右上のトーストだけで控えめに知らせる
+  if (detail.result === 'removed') {
+    toastController.show(`見終わったので後で見るから外しました（${detail.percent}%）`, 'success', 2500);
+    // パネルが保持する保存ダイアログは削除前の状態のままなので取り直す
+    // （古いままだと次の「r」キーで追加ではなく削除が送られる）
+    const panel = document.getElementById(PANEL_ID);
+    if (panel && !panel._playlistBusy) embedPlaylistDialog(panel, { keepCurrentContent: true });
+  } else if (detail.result === 'remove-failed') {
+    toastController.show(`後で見るから外せませんでした（HTTP ${detail.status}）`, 'warning', 4000);
+  } else if (detail.result === 'check-failed') {
+    toastController.show('後で見るの登録状況を確認できませんでした', 'warning', 4000);
+  }
+});
 
 // 履歴API操作をフック
 const originalPushState = history.pushState;
