@@ -124,6 +124,8 @@ youtube-smart-speed と統一されたダークテーマデザイン：
 ### 見終わった動画の後で見るからの自動削除（watch-later-progress.js / watch-later-auto-remove.js）
 - **メインワールド実行**: 再生状態は `#movie_player` のプレイヤーAPI（`getVideoData()` / `getCurrentTime()` / `getDuration()` / `getPlaybackRate()` / `getPlayerResponse()`）から、ログイン状態とAPIの呼び出しに必要な情報は `ytcfg` から取る。どちらも隔離ワールドから見えないため、content.js が `watch-later-progress.js` → `watch-later-auto-remove.js` の順に `<script src>` で注入する。設定は `<html data-youtube-unwatched-opener-watch-later>` にJSON（enabled/percent/mode/debug）で書き、`youtube-unwatched-opener:watch-later-settings` で通知。content.js とのやり取りは `youtube-unwatched-opener:watch-later-auto-remove`（detail はJSON文字列）と `…-go`（detail は requestId）で行う
 - **r キーと同じ処理を通す**: (1) メインワールドが後で見るに入っていることを確かめ `type: 'ready'` を送って待つ → (2) content.js の `requestAutoRemoval()` が r キーと同じ順番待ちに並べる（パネルが `_isEmbedding` / `_playlistBusy` ならパネルの `_pendingToggles` に `{ label, run }` で、パネルが無ければ `playlistTogglesInFlight` が0になるまで `afterPlaylistToggles` で待つ）→ (3) 順番が来たら `trackPlaylistToggle(panel, WATCH_LATER_TARGET, false, completion)` で r キーと同じ処理中表示（右上・動画の中央・パネルのバッジ「後で見るから削除中…」）を出してから `go` を返す → (4) メインワールドが edit_playlist を送り `type: 'result'` を返す → `completion` が解決し、r キーと同じ完了表示（「後で見るから削除しました」右上2秒・中央1.5秒、失敗時は「後で見るの更新に失敗しました（HTTP …）」）とダイアログの取り直し・バッジの確定。r キーとの違いは完了の確かめ方だけ（r キーは Resource Timing、自動削除はメインワールドからの結果）
+- **パネルが保存ダイアログを持っている時は、r キーとまったく同じ方法で外す**: 順番が来た時、パネルの `originalDialog` で後で見るが「追加済み」なら、content.js がその項目をクリックして（`clickPlaylistItem()`）`trackPlaylistToggle(panel, WATCH_LATER_TARGET, false)` を呼び、`go` を `{ requestId, mode: 'page' }` で返す（メインワールドは edit_playlist を送らない）。それ以外（パネルが無い・ダイアログの状態が読めない）は `mode: 'api'` でメインワールドが内部 API で外し、サーバーに反映されたこと（`get_add_to_playlist` が NONE）を1秒ごとに最大20回確かめて `type: 'synced'` を送り、content.js がパネルを取り直す
+  - 理由（2026-11-15 実測）: メインワールドから直接送った edit_playlist は YouTube のページが知らない変更のため、直後のパネルの取り直し（`get_panel`）が反映前の「追加済み」を返し、バッジが戻らなかった。サーバーへの反映には約8〜10秒かかる。YouTube の保存ダイアログで操作した変更は、ページ側が覚えているため直後の取り直しでも正しい状態になる
 - **通信の取り違えの防止**: 自動削除の edit_playlist は `go` の後にしか送らず、`go` は r キーの切り替えが完了してからしか返さない。自動削除の処理中に押された r キーも、パネルの有無にかかわらず完了後に回す（パネルが無い時の r キーの連打も、この変更で1件ずつ実行になった）。そのため r キーの完了の確かめ（`edit_playlist` の Resource Timing）が自動削除の通信を拾わない。content.js から30秒 `go` が来なければ、表示なしで外す（拡張機能の再読み込み後の古いページなど）
 - **判定**: `document` にキャプチャ段階で `timeupdate` を登録してサンプルを取り、`seeking` / `emptied` / `loadstart` の直後のサンプルは不連続として扱う。前回からの進みが「経過時間×再生速度×1.5+1秒」以内なら再生とみなす。モードは `crossing`（既定。閾値の手前から再生して通過。10秒以内の早送りでまたいだ場合も通過とみなす）/ `coverage`（再生した区間の合計が閾値%）/ `position`（位置だけ。シークも含む）。一度外す処理を始めた動画IDはタブ内で覚え、二度と外そうとしない（あとで自分で入れ直した場合も外さない）
 - **対象外**: 広告中（`ad-showing` / `ad-interrupting`。その間は数えず、復帰後のサンプルを起点にし直す）、ライブ・プレミアの待機中/公開中（`getVideoData().isLive` / `videoDetails.isLive` / `isUpcoming`。終了後のアーカイブは通常の動画として扱う）、`/shorts` のページ（ループ再生のため。この拡張機能が `/watch` に置き換えたショートは通常の動画として扱う）、未ログイン
@@ -194,6 +196,12 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
 - 最小権限の原則（activeTab・storage・tabs のみ）
 
 ## 更新履歴
+
+### 2026-11-15: 90%で後で見るから外したあと、プレイリストパネルが更新されない不具合を修正
+- **症状**: 自動で外した時、トーストは r キーと同じに出るが、パネルのバッジが「後で見るに追加済み」のまま戻らない
+- **原因（Chrome 実機で計測）**: 自動削除の edit_playlist（メインワールドから直接送信）の完了直後にパネルが保存ダイアログを取り直すが、YouTube はこの変更を知らないため `get_panel` が反映前の「追加済み」を返していた（サーバーへの反映は約8〜10秒後）。r キーは YouTube の保存ダイアログの項目をクリックするため、ページ側が変更を覚えていて直後の取り直しでも正しい状態になる
+- **修正**: パネルが保存ダイアログを持ち、後で見るが「追加済み」なら、自動削除も r キーと同じく項目のクリックで外す。それ以外は従来どおり内部 API で外し、サーバーへの反映を確かめてからパネルを取り直す（「見終わった動画の後で見るからの自動削除」参照）
+- **検証**: `node --test tests/` 49件。自動削除がダイアログのクリック・表示・バッジ・取り直しまで r キーと同じ呼び出しになること、内部 API で外した時は反映後にパネルを取り直すことを確認。拡張機能を再読み込みしての実機確認は未実施（content.js は再読み込みまで古いまま。メインワールドのスクリプトはディスクから読まれるため、古い content.js とも動く形にした）
 
 ### 2026-11-15: 音量平滑化のコンプレッサー閾値が範囲外になり、コンソールに警告が大量に出る不具合を修正
 - **症状**: 目標レベルを -11〜-6 LUFS にすると、`DynamicsCompressor.threshold.value 6 outside nominal range [-100, 0]` がコンソールに100msごとに出続けた

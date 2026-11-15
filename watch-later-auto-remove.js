@@ -23,6 +23,10 @@
   const GO_EVENT = 'youtube-unwatched-opener:watch-later-auto-remove-go';
   // content.js からの合図（r キーの操作の完了待ち）を待つ上限。届かなくても外す
   const GO_TIMEOUT_MS = 30000;
+  // 内部 API で外した変更がサーバーに反映される（get_panel 等が「未追加」を返す）まで待つ間隔と回数
+  // （実測で約8〜10秒かかる）
+  const SYNC_POLL_INTERVAL_MS = 1000;
+  const SYNC_POLL_MAX = 20;
 
   let config = core.normalizeConfig(core.DEFAULT_CONFIG);
   let debug = false;
@@ -161,21 +165,48 @@
     const requestId = `${videoId}:${Date.now()}`;
     return new Promise((resolve) => {
       let timer = null;
+      // detail は JSON（{ requestId, mode }）。mode: 'page' = content.js が r キーと同じくパネルの
+      // 保存ダイアログで外した / 'api' = ここから edit_playlist を送る
       const onGo = (event) => {
-        if (event.detail !== requestId) return;
+        let go = null;
+        try {
+          go = JSON.parse(event.detail);
+        } catch (e) {
+          go = { requestId: event.detail, mode: 'api' };
+        }
+        if (!go || go.requestId !== requestId) return;
         document.removeEventListener(GO_EVENT, onGo);
         clearTimeout(timer);
-        resolve({ requestId, timedOut: false });
+        resolve({ requestId, mode: go.mode === 'page' ? 'page' : 'api', timedOut: false });
       };
       document.addEventListener(GO_EVENT, onGo);
       timer = setTimeout(() => {
         document.removeEventListener(GO_EVENT, onGo);
         log('content.js からの合図が無いため、そのまま外します');
-        resolve({ requestId, timedOut: true });
+        resolve({ requestId, mode: 'api', timedOut: true });
       }, GO_TIMEOUT_MS);
       // リスナーを付けてから知らせる（content.js がその場で合図を返す場合がある）
       emitResult({ type: 'ready', videoId, requestId });
     });
+  }
+
+  function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  // 内部 API で外した変更がサーバーに反映されたら content.js に知らせ、パネルを取り直させる
+  async function notifyWhenSynced(videoId) {
+    for (let i = 0; i < SYNC_POLL_MAX; i++) {
+      await delay(SYNC_POLL_INTERVAL_MS);
+      const check = await callInnertube('playlist/get_add_to_playlist', { videoIds: [videoId], excludeWatchLater: false });
+      const option = check.ok ? core.findWatchLaterOption(check.json) : null;
+      if (option && option.contains === false) {
+        log(`サーバーに反映されました (${videoId}, ${i + 1}秒後)`);
+        emitResult({ type: 'synced', videoId });
+        return;
+      }
+    }
+    log(`サーバーへの反映を確認できませんでした (${videoId})`);
   }
 
   // ---------- InnerTube API ----------
@@ -246,7 +277,13 @@
 
       const player = getPlayer();
       const nextVideoId = player ? getWatchLaterListNext(player, videoId) : null;
-      const { requestId } = await waitForTurn(videoId);
+      const { requestId, mode } = await waitForTurn(videoId);
+      if (mode === 'page') {
+        // content.js がパネルの保存ダイアログで外した（結果の表示も content.js が r キーと同じく行う）
+        log(`パネルの保存ダイアログで外しました (${videoId})`);
+        if (nextVideoId) pendingAdvance = { removedVideoId: videoId, nextVideoId };
+        return;
+      }
       const startedAt = performance.now();
       const edit = await callInnertube('browse/edit_playlist', core.buildRemoveRequest(videoId, option.removeEndpoint));
       const succeeded = edit.ok && (!edit.json || !edit.json.status || edit.json.status === 'STATUS_SUCCEEDED');
@@ -260,6 +297,7 @@
         status: edit.status,
         duration: performance.now() - startedAt
       });
+      if (succeeded) notifyWhenSynced(videoId);
     } catch (e) {
       log('エラー', e);
       emitResult({ type: 'result', videoId, result: 'check-failed', status: 0, reason: String(e && e.message) });

@@ -3110,7 +3110,34 @@ function requestAutoRemoval(detail) {
   startAutoRemoval(panel, detail);
 }
 
+// パネルが保持する保存ダイアログで、後で見るに入っている状態の項目（r キーと同じ方法で外せる時だけ返す）
+function findWatchLaterItemToRemove(panel) {
+  const state = panel ? playlistPanelState.get(panel) : null;
+  const dialog = state && state.originalDialog;
+  if (!dialog || !document.contains(dialog)) return null;
+  const item = findPlaylistItem(dialog, WATCH_LATER_TARGET);
+  return item && getPlaylistItemState(dialog, WATCH_LATER_TARGET) === true ? item : null;
+}
+
+function sendAutoRemovalGo(requestId, mode) {
+  document.dispatchEvent(new CustomEvent(WATCH_LATER_AUTO_REMOVE_GO_EVENT, {
+    detail: JSON.stringify({ requestId, mode })
+  }));
+}
+
 function startAutoRemoval(panel, detail) {
+  // パネルが保存ダイアログを持っていれば、r キーとまったく同じくダイアログの項目をクリックして外す。
+  // メインワールドから直接 edit_playlist を送ると、YouTube のページはその変更を知らないため、
+  // 直後の取り直し（get_panel）が反映前の「追加済み」を返し、パネルが更新されない（サーバーへの反映に約10秒かかる）
+  const item = findWatchLaterItemToRemove(panel);
+  if (item) {
+    console.log(`[後で見る自動削除] パネルの保存ダイアログで後で見るから削除します (${detail.videoId})`);
+    clickPlaylistItem(item);
+    trackPlaylistToggle(panel, WATCH_LATER_TARGET, false);
+    sendAutoRemovalGo(detail.requestId, 'page');
+    return;
+  }
+
   const completion = new Promise((resolve) => {
     autoRemovalCompletions.set(detail.requestId, resolve);
     setTimeout(() => {
@@ -3119,12 +3146,20 @@ function startAutoRemoval(panel, detail) {
   });
   console.log(`[後で見る自動削除] 後で見るから削除します (${detail.videoId})`);
   trackPlaylistToggle(panel, WATCH_LATER_TARGET, false, completion);
-  document.dispatchEvent(new CustomEvent(WATCH_LATER_AUTO_REMOVE_GO_EVENT, { detail: detail.requestId }));
+  sendAutoRemovalGo(detail.requestId, 'api');
 }
 
 function handleAutoRemovalMessage(detail) {
   if (detail.type === 'ready') {
     requestAutoRemoval(detail);
+    return;
+  }
+  if (detail.type === 'synced') {
+    // 内部 API で外した変更がサーバーに反映された。取り直して、パネルを実際の状態にする
+    const panel = getCurrentVideoId() === detail.videoId ? document.getElementById(PANEL_ID) : null;
+    if (panel && !panel._isEmbedding && !panel._playlistBusy) {
+      embedPlaylistDialog(panel, { keepCurrentContent: true });
+    }
     return;
   }
   console.log(`[後で見る自動削除] ${detail.result} (${detail.videoId}, HTTP ${detail.status})`);
