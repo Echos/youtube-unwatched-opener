@@ -24,6 +24,7 @@ YouTube登録チャンネルページ（https://www.youtube.com/feed/subscriptio
 ### 動画プレイヤー機能
 - 「r」キーで後で見るプレイリストの追加/削除
 - 「b」キーでBGMプレイリスト（名前は設定で変更可、完全一致）の追加/削除
+- 後で見るに入っている動画を、動画の長さの90%（設定可）まで再生したら自動で後で見るから外す（設定でOFF可）
 - プレイリスト操作の処理中・完了を右上トースト・パネルのバッジ・動画の中央（設定でOFF可）に表示
 - 右サイドバーにプレイリストパネル表示
 - ショート動画の通常動画プレイヤーでの再生
@@ -37,6 +38,9 @@ youtube-unwatched-opener/
 ├── manifest.json        # 拡張機能設定（Manifest V3、Chrome/Firefox両対応）
 ├── browser-polyfill.js  # Chrome/Firefox API抽象化レイヤー
 ├── volume-normalizer.js # 音量平滑化（Web Audio API、<script>注入でメインワールド実行）
+├── watch-later-progress.js    # 後で見るの自動削除の判定（純粋なロジック。メインワールドに注入、Nodeのテストからも読む）
+├── watch-later-auto-remove.js # 後で見るの自動削除（プレイヤー監視・InnerTube APIで確認と削除、<script>注入でメインワールド実行）
+├── tests/               # 単体テスト（node --test tests/）
 ├── content.js           # メインロジック（未視聴動画検出、ハイライト、ショート動画変換）
 ├── background.js        # バックグラウンド処理（タブ作成）
 ├── popup.html           # 設定画面HTML
@@ -69,7 +73,10 @@ const DEFAULT_SETTINGS = {
   includeShorts: true,
   hideRelatedVideos: true,
   volumeNormalizeEnabled: true,
-  volumeTargetLufs: -14
+  volumeTargetLufs: -14,
+  watchLaterAutoRemoveEnabled: true,
+  watchLaterAutoRemovePercent: 90,
+  watchLaterAutoRemoveMode: 'crossing'
 };
 ```
 
@@ -79,7 +86,7 @@ youtube-smart-speed と統一されたダークテーマデザイン：
 - **アクセントカラー**: `#ff4040`（YouTube赤）
 - **ヘッダー**: ロゴアイコン + タイトル/サブタイトル + ON/OFF メイントグル
 - **ステータスバー**: ドットインジケーター + モノスペーステキスト
-- **セクション構成**: 基本設定 / ハイライト表示 / プレイリスト（後で見るキー・BGMキー・BGMの保存先・中央に処理状況・パネル表示） / 関連動画欄 / 音量平滑化 / 詳細設定
+- **セクション構成**: 基本設定 / ハイライト表示 / プレイリスト（後で見るキー・BGMキー・BGMの保存先・見終わったら外す・外す位置・判定の方法・中央に処理状況・パネル表示） / 関連動画欄 / 音量平滑化 / 詳細設定
 - **トグル**: `toggle-track` + `toggle-thumb` 構造（Smart Speed 統一）
 - **入力フィールド**: ダークサーフェス（`--surface2`）スタイル
 - **バリデーション**: CSS `:not(:empty)` によるエラー表示制御
@@ -107,6 +114,14 @@ youtube-smart-speed と統一されたダークテーマデザイン：
 - プレイリスト名は項目内の最初の `span[role=text]`（新UI）／`#label`（旧UI）から取る。`aria-label`（「BGM, 限定公開, 選択されていません」形式）は名前にカンマを含み得るため補助扱い
 - 流れ: パネルが保持するダイアログの項目をクリック → 処理中表示 → `edit_playlist` の完了を Resource Timing で検知して結果表示 → 完了後にダイアログを取り直して状態確定。処理中に押されたキーは前の操作の完了後に1件ずつ実行し、同じプレイリストへの連打は1回にまとめる
 - 処理状況は `notifyPlaylistStatus()` で右上トースト（`toastController`）と動画の中央（`centerToastController`、`centerToastEnabled` 時のみ）に同時に出す。中央表示は表示中のプレイヤー要素（`#movie_player`）の中に `position: absolute` で置くため、通常・シアター・全画面のいずれでも動画の中央に重なる（プレイヤーが無いページでは画面中央、全画面時は `document.fullscreenElement` の中）。完了・エラーは動画の邪魔にならないよう1.5秒で消す
+
+### 見終わった動画の後で見るからの自動削除（watch-later-progress.js / watch-later-auto-remove.js）
+- **メインワールド実行**: 再生状態は `#movie_player` のプレイヤーAPI（`getVideoData()` / `getCurrentTime()` / `getDuration()` / `getPlaybackRate()` / `getPlayerResponse()`）から、ログイン状態とAPIの呼び出しに必要な情報は `ytcfg` から取る。どちらも隔離ワールドから見えないため、content.js が `watch-later-progress.js` → `watch-later-auto-remove.js` の順に `<script src>` で注入する。設定は `<html data-youtube-unwatched-opener-watch-later>` にJSON（enabled/percent/mode/debug）で書き、`youtube-unwatched-opener:watch-later-settings` で通知。結果は `youtube-unwatched-opener:watch-later-auto-remove`（detail はJSON文字列）で content.js に返し、右上トーストだけで知らせる（中央表示は視聴の邪魔になるため使わない）。削除後はパネルの保存ダイアログを取り直す（古いままだと次の r キーで追加ではなく削除が送られる）
+- **判定**: `document` にキャプチャ段階で `timeupdate` を登録してサンプルを取り、`seeking` / `emptied` / `loadstart` の直後のサンプルは不連続として扱う。前回からの進みが「経過時間×再生速度×1.5+1秒」以内なら再生とみなす。モードは `crossing`（既定。閾値の手前から再生して通過。10秒以内の早送りでまたいだ場合も通過とみなす）/ `coverage`（再生した区間の合計が閾値%）/ `position`（位置だけ。シークも含む）。一度外す処理を始めた動画IDはタブ内で覚え、二度と外そうとしない（あとで自分で入れ直した場合も外さない）
+- **対象外**: 広告中（`ad-showing` / `ad-interrupting`。その間は数えず、復帰後のサンプルを起点にし直す）、ライブ・プレミアの待機中/公開中（`getVideoData().isLive` / `videoDetails.isLive` / `isUpcoming`。終了後のアーカイブは通常の動画として扱う）、`/shorts` のページ（ループ再生のため。この拡張機能が `/watch` に置き換えたショートは通常の動画として扱う）、未ログイン
+- **SPA遷移時の誤削除の防止**: 動画IDが変わったら状態を作り直し、長さの違うサンプル同士は再生とみなさない。`position` モードは、その動画で閾値より手前の位置を一度見てからでないと外さない
+- **外す方法（InnerTube API を選んだ理由）**: `playlist/get_add_to_playlist`（`videoIds`, `excludeWatchLater: false`）で後で見るの `containsSelectedVideos`（`ALL` / `NONE`）を確かめ、`ALL` の時だけ `browse/edit_playlist` に応答内の `removeFromPlaylistServiceEndpoint.playlistEditEndpoint`（`ACTION_REMOVE_VIDEO_BY_VIDEO_ID`）を送る。認証はYouTubeのページと同じ `SAPISIDHASH`（`SAPISID` クッキー・時刻・オリジンのSHA-1）、`X-Goog-AuthUser`、ブランドアカウント時は `X-Goog-PageId`。保存ダイアログを操作する方法は、(1) ダイアログのDOMが何度も変わり（`ytd-playlist-add-to-option-renderer` → `toggleable-list-item-view-model`、選択状態の属性の場所）そのたびに壊れた、(2) パネルが保持するオフスクリーンのダイアログはクリック後も状態が更新されない、(3) パネルを表示しない設定では終了間際にダイアログが画面に開く、ため使わない。APIの応答形式は2026-11-15にChrome実機で確認した
+- **過去の実装がうまく動かなかった理由**: (1) 2026-10-23 の「残り10秒で削除」（`feat-auto-remove-watch-later-at-end`）はmasterにマージされないまま、以後の作業ブランチがmasterから切られたため、読み込まれる拡張機能に入っていなかった。さらに終了画面（最後の20秒前後）で動画を閉じる・次へ進む使い方では残り10秒に届かない、パネルのダイアログの状態が分からない（`null`）と何もしない、という弱点があった。(2) 2026-03-08 に削除した初代（`monitorVideoProgress`）は `timeupdate` リスナーを MutationObserver からの setTimeout で付け直す方式で、旧UIのセレクタ（`ytd-playlist-add-to-option-renderer` 等）とテキストの部分一致（`'wl'` を含む項目）に頼っていた
 
 ### ショート動画変換ロジック
 ```javascript
@@ -167,6 +182,10 @@ if (window.location.href.indexOf('youtube.com/shorts') > -1) {
 - 最小権限の原則（activeTab・storage・tabs のみ）
 
 ## 更新履歴
+
+### 2026-11-15: 見終わった動画を後で見るから外す機能を作り直し
+- **機能**: 後で見るに入っている動画を、動画の長さの `watchLaterAutoRemovePercent`%（デフォルト90、50〜99）まで再生したら外す（`watchLaterAutoRemoveEnabled`、デフォルトON）。シークの扱いは `watchLaterAutoRemoveMode`（`crossing` / `coverage` / `position`）。仕組みと過去の実装が動かなかった理由は「見終わった動画の後で見るからの自動削除」を参照
+- **検証**: (1) `node --test tests/` で判定（通常再生・シーク・早送り・倍速・広告・ライブ・SPA遷移直後・同じ動画の再判定）と、プレイヤー・ytcfg・fetch を差し替えた環境での確認→削除の流れの計24件が通る、(2) Chrome実機（ログイン済み）で `get_add_to_playlist` の応答形式と、後で見るに入っている動画で `containsSelectedVideos: 'ALL'`・削除操作が `ACTION_REMOVE_VIDEO_BY_VIDEO_ID` であることを確認、(3) 実機の動画ページ（144秒の動画）に2つのスクリプトを注入し、95%へのシークでは外さず、85%から再生して90%（129.5秒）を過ぎた130.3秒で1回だけ確認→削除のリクエストが組み立てられることを確認（削除の送信だけは記録に差し替え、後で見るは変更していない）。拡張機能を再読み込みしての通し動作（実際の削除・トースト・パネルの取り直し）は未確認
 
 ### 2026-10-31: プレイリスト操作の中央表示を動画の中央に移し、サイズを拡大
 - **変更**: 中央の処理状況表示（`centerToastController`）を、ビューポート中央ではなく表示中のプレイヤー要素の中央に出すよう変更。通常表示では動画が画面の左寄りにあるため、画面中央だと動画から外れていた

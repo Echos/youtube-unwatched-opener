@@ -40,7 +40,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["volume-normalizer.js"],
+      "resources": ["volume-normalizer.js", "watch-later-progress.js", "watch-later-auto-remove.js"],
       "matches": ["https://www.youtube.com/*"]
     }
   ]

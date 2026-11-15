@@ -14,7 +14,10 @@ const DEFAULT_SETTINGS = {
   includeShorts: true,
   hideRelatedVideos: true,
   volumeNormalizeEnabled: true,
-  volumeTargetLufs: -14
+  volumeTargetLufs: -14,
+  watchLaterAutoRemoveEnabled: true,
+  watchLaterAutoRemovePercent: 90,
+  watchLaterAutoRemoveMode: 'crossing'
 };
 
 // ========== DOM 参照 ==========
@@ -34,12 +37,16 @@ const el = {
   hideRelatedVideos:     document.getElementById('hideRelatedVideos'),
   volumeNormalizeEnabled: document.getElementById('volumeNormalizeEnabled'),
   volumeTargetLufs:      document.getElementById('volumeTargetLufs'),
+  watchLaterAutoRemoveEnabled: document.getElementById('watchLaterAutoRemoveEnabled'),
+  watchLaterAutoRemovePercent: document.getElementById('watchLaterAutoRemovePercent'),
+  watchLaterAutoRemoveMode:    document.getElementById('watchLaterAutoRemoveMode'),
   statusDot:             document.getElementById('status-dot'),
   status:                document.getElementById('status'),
   toggleLabel:           document.getElementById('toggle-label'),
   videoCountError:      document.getElementById('videoCountError'),
   historyMaxCountError: document.getElementById('historyMaxCountError'),
   volumeTargetLufsError: document.getElementById('volumeTargetLufsError'),
+  watchLaterAutoRemovePercentError: document.getElementById('watchLaterAutoRemovePercentError'),
   bgmPlaylistNameError:  document.getElementById('bgmPlaylistNameError')
 };
 
@@ -47,7 +54,8 @@ const el = {
 const validators = [
   { input: el.videoCount,    errorEl: el.videoCountError,    min: 1,  max: 50    },
   { input: el.historyMaxCount, errorEl: el.historyMaxCountError, min: 50, max: 10000 },
-  { input: el.volumeTargetLufs, errorEl: el.volumeTargetLufsError, min: -30, max: -6 }
+  { input: el.volumeTargetLufs, errorEl: el.volumeTargetLufsError, min: -30, max: -6 },
+  { input: el.watchLaterAutoRemovePercent, errorEl: el.watchLaterAutoRemovePercentError, min: 50, max: 99 }
 ];
 
 function validateRange(value, min, max) {
@@ -75,7 +83,10 @@ function getSettingsFromDOM() {
     includeShorts:         el.includeShorts.checked,
     hideRelatedVideos:     el.hideRelatedVideos.checked,
     volumeNormalizeEnabled: el.volumeNormalizeEnabled.checked,
-    volumeTargetLufs:      parseInt(el.volumeTargetLufs.value)
+    volumeTargetLufs:      parseInt(el.volumeTargetLufs.value),
+    watchLaterAutoRemoveEnabled: el.watchLaterAutoRemoveEnabled.checked,
+    watchLaterAutoRemovePercent: parseInt(el.watchLaterAutoRemovePercent.value),
+    watchLaterAutoRemoveMode:    el.watchLaterAutoRemoveMode.value
   };
 }
 
@@ -116,6 +127,9 @@ function loadSettings() {
     el.hideRelatedVideos.checked     = settings.hideRelatedVideos;
     el.volumeNormalizeEnabled.checked = settings.volumeNormalizeEnabled;
     el.volumeTargetLufs.value        = settings.volumeTargetLufs;
+    el.watchLaterAutoRemoveEnabled.checked = settings.watchLaterAutoRemoveEnabled;
+    el.watchLaterAutoRemovePercent.value   = settings.watchLaterAutoRemovePercent;
+    el.watchLaterAutoRemoveMode.value      = settings.watchLaterAutoRemoveMode;
 
     el.toggleLabel.textContent = settings.enabled ? 'ON' : 'OFF';
 
@@ -165,7 +179,7 @@ el.enabled.addEventListener('change', () => {
   el.shortcutKey, el.highlightEnabled, el.watchLaterKey, el.bgmPlaylistKey,
   el.bgmPlaylistName, el.centerToastEnabled,
   el.showPlaylistPanel, el.debugMode, el.includeShorts, el.hideRelatedVideos,
-  el.volumeNormalizeEnabled
+  el.volumeNormalizeEnabled, el.watchLaterAutoRemoveEnabled, el.watchLaterAutoRemoveMode
 ].forEach(input => input.addEventListener('change', saveSettings));
 
 // ========== イベント: 数値入力 ==========
