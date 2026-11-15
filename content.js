@@ -2193,13 +2193,26 @@ function setPlaylistBusy(panel, busy, pendingText = '') {
 
 // プレイリストの切り替え後の「処理中」表示と完了処理
 // expected: 切り替え後に期待する状態（true=追加 / false=削除 / null=不明）
-function trackPlaylistToggle(panel, target, expected) {
+// completion: 完了を知らせる Promise（{ ok, status, duration } / 確認できなければ null）。
+//   省略時は edit_playlist の通信を Resource Timing で待つ（r / b キー）。
+//   見終わった動画の自動削除はメインワールドから届く結果を渡す（同じ表示・同じ後処理を通す）
+// 実行中の切り替えの数。パネルが無い時はこれで順番待ちさせ、r キーの完了の確かめ（Resource Timing）に
+// 別の操作（自動削除など）の通信が紛れ込まないようにする
+let playlistTogglesInFlight = 0;
+const afterPlaylistToggles = [];
+
+function runAfterPlaylistToggles(entry) {
+  if (!afterPlaylistToggles.some(e => e.key === entry.key)) afterPlaylistToggles.push(entry);
+}
+
+function trackPlaylistToggle(panel, target, expected, completion = null) {
   const since = performance.now();
   const messages = getPlaylistMessages(target, expected);
   notifyPlaylistStatus(messages.pending, 'pending', 10000, { fresh: true });
   if (panel) setPlaylistBusy(panel, true, messages.pending);
+  playlistTogglesInFlight++;
 
-  waitForPlaylistEditRequest(since).then((result) => {
+  (completion || waitForPlaylistEditRequest(since)).then((result) => {
     if (!result) {
       notifyPlaylistStatus(`${target.label}の更新を確認できませんでした`, 'warning', 3000);
     } else if (result.ok) {
@@ -2211,6 +2224,10 @@ function trackPlaylistToggle(panel, target, expected) {
     if (panel && document.contains(panel)) {
       // 完了後の取り直しが終わるまで処理中表示を維持し、埋め込み完了時に実際の状態で確定させる
       embedPlaylistDialog(panel, { keepCurrentContent: true });
+    }
+    playlistTogglesInFlight = Math.max(0, playlistTogglesInFlight - 1);
+    if (playlistTogglesInFlight === 0) {
+      afterPlaylistToggles.splice(0).forEach(entry => entry.run());
     }
   });
 }
@@ -2232,10 +2249,13 @@ function finishPlaylistBusy(panel) {
 }
 
 // 処理中に押されたキーを、前の操作の完了後に1件ずつ実行する
+// （待ち行列にはキーで押したターゲットと、見終わった動画の自動削除 { label, run } が入る）
 function runNextPendingToggle(panel) {
   const queue = panel._pendingToggles;
   if (!queue || queue.length === 0) return;
-  togglePlaylist(queue.shift());
+  const next = queue.shift();
+  if (typeof next.run === 'function') next.run();
+  else togglePlaylist(next);
 }
 
 function togglePlaylist(target) {
@@ -2243,6 +2263,13 @@ function togglePlaylist(target) {
 
   // 1. プレイリストパネルがある場合はオリジナルダイアログを直接操作
   const playlistPanel = document.getElementById(PANEL_ID);
+  // パネルが無い時も、前の切り替え（自動削除を含む）が完了するまで待つ
+  if (!playlistPanel && playlistTogglesInFlight > 0) {
+    runAfterPlaylistToggles({ key: `toggle:${target.label}`, run: () => togglePlaylist(target) });
+    console.log(`[プレイリスト切り替え] 処理中のため、完了後に ${target.label} を切り替えます`);
+    notifyPlaylistStatus(`前の操作の完了後に${target.label}を切り替えます`, 'pending', 10000);
+    return;
+  }
   if (playlistPanel) {
     // パネルがダイアログを取得し直している最中や、直前の切り替えが完了していない間は、
     // 完了後にトグルする。古いダイアログのままクリックすると、YouTube 内部の
@@ -2250,7 +2277,7 @@ function togglePlaylist(target) {
     // 同じプレイリストへの連打は1回にまとめる
     if (playlistPanel._isEmbedding || playlistPanel._playlistBusy) {
       const queue = playlistPanel._pendingToggles || (playlistPanel._pendingToggles = []);
-      if (!queue.some(t => t.label === target.label)) queue.push(target);
+      if (!queue.some(t => t.label === target.label && typeof t.run !== 'function')) queue.push(target);
       console.log(`[プレイリスト切り替え] 処理中のため、完了後に ${target.label} を切り替えます`);
       notifyPlaylistStatus(`前の操作の完了後に${target.label}を切り替えます`, 'pending', 10000);
       return;
@@ -3055,28 +3082,70 @@ function injectWatchLaterAutoRemoveScript() {
     .catch((err) => console.log('[後で見る自動削除]', err.message));
 }
 
-document.addEventListener('youtube-unwatched-opener:watch-later-auto-remove', (event) => {
+// 見終わった動画を外す流れ（メインワールド ⇔ content.js）:
+//   1. メインワールドが後で見るに入っていることを確かめ、type: 'ready' を送って合図を待つ
+//   2. content.js は r キーと同じ順番待ち（パネルの待ち行列／実行中の切り替えの完了待ち）に並べ、
+//      順番が来たら trackPlaylistToggle() で r キーと同じ処理中表示を出してから「go」を返す
+//   3. メインワールドが edit_playlist を送り、type: 'result' で結果を返す → r キーと同じ完了表示・パネルの取り直し
+// r キーの操作と通信が重ならないため、r キーの完了の確かめ（Resource Timing）が自動削除の通信を取り違えない
+const WATCH_LATER_AUTO_REMOVE_EVENT = 'youtube-unwatched-opener:watch-later-auto-remove';
+const WATCH_LATER_AUTO_REMOVE_GO_EVENT = 'youtube-unwatched-opener:watch-later-auto-remove-go';
+const AUTO_REMOVE_RESULT_TIMEOUT_MS = 15000;
+const autoRemovalCompletions = new Map(); // requestId → 完了を知らせる resolve
+
+function requestAutoRemoval(detail) {
+  // 別の動画に移っていたら、その動画のパネルには表示しない
+  const panel = getCurrentVideoId() === detail.videoId ? document.getElementById(PANEL_ID) : null;
+  if (panel && (panel._isEmbedding || panel._playlistBusy)) {
+    const queue = panel._pendingToggles || (panel._pendingToggles = []);
+    if (!queue.some(t => t.requestId === detail.requestId)) {
+      queue.push({ label: WATCH_LATER_TARGET.label, requestId: detail.requestId, run: () => requestAutoRemoval(detail) });
+    }
+    return;
+  }
+  if (playlistTogglesInFlight > 0) {
+    runAfterPlaylistToggles({ key: `auto:${detail.requestId}`, run: () => requestAutoRemoval(detail) });
+    return;
+  }
+  startAutoRemoval(panel, detail);
+}
+
+function startAutoRemoval(panel, detail) {
+  const completion = new Promise((resolve) => {
+    autoRemovalCompletions.set(detail.requestId, resolve);
+    setTimeout(() => {
+      if (autoRemovalCompletions.delete(detail.requestId)) resolve(null);
+    }, AUTO_REMOVE_RESULT_TIMEOUT_MS);
+  });
+  console.log(`[後で見る自動削除] 後で見るから削除します (${detail.videoId})`);
+  trackPlaylistToggle(panel, WATCH_LATER_TARGET, false, completion);
+  document.dispatchEvent(new CustomEvent(WATCH_LATER_AUTO_REMOVE_GO_EVENT, { detail: detail.requestId }));
+}
+
+function handleAutoRemovalMessage(detail) {
+  if (detail.type === 'ready') {
+    requestAutoRemoval(detail);
+    return;
+  }
+  console.log(`[後で見る自動削除] ${detail.result} (${detail.videoId}, HTTP ${detail.status})`);
+  if (detail.result === 'check-failed') {
+    notifyPlaylistStatus(`${WATCH_LATER_TARGET.label}の登録状況を確認できませんでした`, 'warning', 3000, { fresh: true });
+    return;
+  }
+  const resolve = autoRemovalCompletions.get(detail.requestId);
+  if (!resolve) return;
+  autoRemovalCompletions.delete(detail.requestId);
+  resolve({ ok: detail.result === 'removed', status: detail.status, duration: detail.duration || 0 });
+}
+
+document.addEventListener(WATCH_LATER_AUTO_REMOVE_EVENT, (event) => {
   let detail = null;
   try {
     detail = JSON.parse(event.detail);
   } catch (e) {
     return;
   }
-  if (!detail) return;
-  console.log(`[後で見る自動削除] ${detail.result} (${detail.videoId}, HTTP ${detail.status})`);
-
-  // 中央の表示は視聴の邪魔になるため使わず、右上のトーストだけで控えめに知らせる
-  if (detail.result === 'removed') {
-    toastController.show(`見終わったので後で見るから外しました（${detail.percent}%）`, 'success', 2500);
-    // パネルが保持する保存ダイアログは削除前の状態のままなので取り直す
-    // （古いままだと次の「r」キーで追加ではなく削除が送られる）
-    const panel = document.getElementById(PANEL_ID);
-    if (panel && !panel._playlistBusy) embedPlaylistDialog(panel, { keepCurrentContent: true });
-  } else if (detail.result === 'remove-failed') {
-    toastController.show(`後で見るから外せませんでした（HTTP ${detail.status}）`, 'warning', 4000);
-  } else if (detail.result === 'check-failed') {
-    toastController.show('後で見るの登録状況を確認できませんでした', 'warning', 4000);
-  }
+  if (detail) handleAutoRemovalMessage(detail);
 });
 
 // 履歴API操作をフック

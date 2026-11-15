@@ -31,7 +31,7 @@ function addToPlaylistResponse(contains, videoId) {
   };
 }
 
-function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { enabled: true, percent: 90, mode: 'crossing' }, editStatus = 200, search = '?v=vid1', playlist = null } = {}) {
+function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { enabled: true, percent: 90, mode: 'crossing' }, editStatus = 200, search = '?v=vid1', playlist = null, answerReady = true } = {}) {
   const listeners = {};
   const results = [];
   const requests = [];
@@ -72,9 +72,17 @@ function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { 
     },
     getElementById: (id) => id === 'movie_player' ? player : null,
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    removeEventListener(type, fn) { listeners[type] = (listeners[type] || []).filter(f => f !== fn); },
     dispatchEvent(event) {
-      if (event.type === 'youtube-unwatched-opener:watch-later-auto-remove') results.push(JSON.parse(event.detail));
-      for (const fn of listeners[event.type] || []) fn(event);
+      if (event.type === 'youtube-unwatched-opener:watch-later-auto-remove') {
+        const detail = JSON.parse(event.detail);
+        results.push(detail);
+        // content.js の代わりに、順番待ちが無い時と同じくその場で合図を返す
+        if (detail.type === 'ready' && answerReady) {
+          document.dispatchEvent({ type: 'youtube-unwatched-opener:watch-later-auto-remove-go', detail: detail.requestId });
+        }
+      }
+      for (const fn of [...(listeners[event.type] || [])]) fn(event);
       return true;
     }
   };
@@ -114,6 +122,7 @@ function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { 
     TextEncoder,
     URLSearchParams,
     setTimeout: (fn) => timers.push(fn),
+    clearTimeout: () => {},
     fetch,
     console
   };
@@ -132,6 +141,12 @@ function createEnvironment({ inWatchLater = true, loggedIn = true, settings = { 
   return {
     player,
     results,
+    // 結果の要約（ready: 合図待ち、result: 削除の結果）
+    summary: () => results.map(r => r.type === 'ready' ? 'ready' : `${r.result}:${r.status}`),
+    answerGo(index = 0) {
+      const ready = results.filter(r => r.type === 'ready')[index];
+      document.dispatchEvent({ type: 'youtube-unwatched-opener:watch-later-auto-remove-go', detail: ready.requestId });
+    },
     requests,
     navigations,
     fire,
@@ -173,7 +188,9 @@ test('後で見るに入っている動画は、90%を再生で通過した時�
   assert.equal(edit.body.playlistId, 'WL');
   assert.match(edit.headers.Authorization, /^SAPISIDHASH \d+_[0-9a-f]{40}$/);
   assert.equal(edit.headers['X-Origin'], 'https://www.youtube.com');
-  assert.deepEqual(env.results, [{ videoId: 'vid1', result: 'removed', status: 200, percent: 90 }]);
+  assert.deepEqual(env.summary(), ['ready', 'removed:200']);
+  assert.equal(env.results[1].requestId, env.results[0].requestId, '合図待ちと結果は同じ requestId');
+  assert.equal(env.results[1].videoId, 'vid1');
 
   env.seek(50);
   env.play(50);
@@ -228,14 +245,14 @@ test('削除に失敗したら remove-failed を知らせる', async () => {
   const env = createEnvironment({ editStatus: 403 });
   env.play(100);
   await env.flush();
-  assert.deepEqual(env.results, [{ videoId: 'vid1', result: 'remove-failed', status: 403, percent: 90 }]);
+  assert.deepEqual(env.summary(), ['ready', 'remove-failed:403']);
 });
 
 test('後で見るのリストから続けて再生している時も外し、YouTube が次へ進めば何もしない', async () => {
   const env = createEnvironment({ search: '?v=vid1&list=WL', playlist: ['vid1', 'vid2'] });
   env.play(100);
   await env.flush();
-  assert.equal(env.results[0].result, 'removed');
+  assert.deepEqual(env.summary(), ['ready', 'removed:200']);
   env.player.state = 0;
   env.fire('ended');
   // YouTube がリストの次の動画へ進んだ
@@ -277,7 +294,7 @@ test('リストの最後の動画や、リスト外の再生では次へ進め�
     const env = createEnvironment(options);
     env.play(100);
     await env.flush();
-    assert.equal(env.results[0].result, 'removed');
+    assert.deepEqual(env.summary(), ['ready', 'removed:200']);
     env.player.state = 0;
     env.fire('ended');
     env.runTimers();
@@ -295,4 +312,32 @@ test('削除の応答より先に再生が終わった場合も、止まって�
   await env.flush(); // ここで削除が完了する
   env.runTimers();
   assert.equal(env.player.nextVideoCalls, 1);
+});
+
+test('content.js の合図（r キーの操作の完了待ち）が来るまで edit_playlist を送らない', async () => {
+  const env = createEnvironment({ answerReady: false });
+  env.play(100);
+  await env.flush();
+  assert.deepEqual(env.summary(), ['ready']);
+  assert.deepEqual(env.requests.map(r => r.url.split('?')[0]), ['/youtubei/v1/playlist/get_add_to_playlist']);
+  env.answerGo();
+  await env.flush();
+  assert.deepEqual(env.summary(), ['ready', 'removed:200']);
+  assert.equal(env.requests.length, 2);
+});
+
+test('合図が来ないまま待ち時間が過ぎた場合も外す', async () => {
+  const env = createEnvironment({ answerReady: false });
+  env.play(100);
+  await env.flush();
+  env.runTimers(); // 30秒の待ち時間が過ぎた
+  await env.flush();
+  assert.deepEqual(env.summary(), ['ready', 'removed:200']);
+});
+
+test('後で見るに入っていなければ合図待ちも送らない', async () => {
+  const env = createEnvironment({ inWatchLater: false });
+  env.play(100);
+  await env.flush();
+  assert.deepEqual(env.summary(), []);
 });
