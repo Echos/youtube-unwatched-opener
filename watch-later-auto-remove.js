@@ -20,6 +20,9 @@
   const SETTINGS_ATTR = 'data-youtube-unwatched-opener-watch-later';
   const SETTINGS_EVENT = 'youtube-unwatched-opener:watch-later-settings';
   const RESULT_EVENT = 'youtube-unwatched-opener:watch-later-auto-remove';
+  const GO_EVENT = 'youtube-unwatched-opener:watch-later-auto-remove-go';
+  // content.js からの合図（r キーの操作の完了待ち）を待つ上限。届かなくても外す
+  const GO_TIMEOUT_MS = 30000;
 
   let config = core.normalizeConfig(core.DEFAULT_CONFIG);
   let debug = false;
@@ -152,6 +155,29 @@
     }, ADVANCE_WAIT_MS);
   }
 
+  // content.js に削除の準備ができたことを知らせ、r キーと同じ順番待ちを経て合図（go）が来るまで待つ。
+  // 合図の前に edit_playlist を送ると、r キーの完了の確かめ（Resource Timing）と取り違える
+  function waitForTurn(videoId) {
+    const requestId = `${videoId}:${Date.now()}`;
+    return new Promise((resolve) => {
+      let timer = null;
+      const onGo = (event) => {
+        if (event.detail !== requestId) return;
+        document.removeEventListener(GO_EVENT, onGo);
+        clearTimeout(timer);
+        resolve({ requestId, timedOut: false });
+      };
+      document.addEventListener(GO_EVENT, onGo);
+      timer = setTimeout(() => {
+        document.removeEventListener(GO_EVENT, onGo);
+        log('content.js からの合図が無いため、そのまま外します');
+        resolve({ requestId, timedOut: true });
+      }, GO_TIMEOUT_MS);
+      // リスナーを付けてから知らせる（content.js がその場で合図を返す場合がある）
+      emitResult({ type: 'ready', videoId, requestId });
+    });
+  }
+
   // ---------- InnerTube API ----------
   async function sha1Hex(text) {
     const buffer = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(text));
@@ -205,12 +231,12 @@
         excludeWatchLater: false
       });
       if (!check.ok) {
-        emitResult({ videoId, result: 'check-failed', status: check.status });
+        emitResult({ type: 'result', videoId, result: 'check-failed', status: check.status });
         return;
       }
       const option = core.findWatchLaterOption(check.json);
       if (!option || option.contains === null) {
-        emitResult({ videoId, result: 'check-failed', status: check.status, reason: 'format' });
+        emitResult({ type: 'result', videoId, result: 'check-failed', status: check.status, reason: 'format' });
         return;
       }
       if (!option.contains) {
@@ -220,14 +246,23 @@
 
       const player = getPlayer();
       const nextVideoId = player ? getWatchLaterListNext(player, videoId) : null;
+      const { requestId } = await waitForTurn(videoId);
+      const startedAt = performance.now();
       const edit = await callInnertube('browse/edit_playlist', core.buildRemoveRequest(videoId, option.removeEndpoint));
       const succeeded = edit.ok && (!edit.json || !edit.json.status || edit.json.status === 'STATUS_SUCCEEDED');
       log(`edit_playlist: HTTP ${edit.status}, status=${edit.json && edit.json.status}`);
       if (succeeded && nextVideoId) pendingAdvance = { removedVideoId: videoId, nextVideoId };
-      emitResult({ videoId, result: succeeded ? 'removed' : 'remove-failed', status: edit.status, percent: config.percent });
+      emitResult({
+        type: 'result',
+        videoId,
+        requestId,
+        result: succeeded ? 'removed' : 'remove-failed',
+        status: edit.status,
+        duration: performance.now() - startedAt
+      });
     } catch (e) {
       log('エラー', e);
-      emitResult({ videoId, result: 'check-failed', status: 0, reason: String(e && e.message) });
+      emitResult({ type: 'result', videoId, result: 'check-failed', status: 0, reason: String(e && e.message) });
     }
   }
 
